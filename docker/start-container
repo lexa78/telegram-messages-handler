@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -e
+
+# Пользователь для запуска PHP
+PHP_USER="${SUPERVISOR_PHP_USER:-sail}"
+
+# UID пользователя sail (если нужен кастомный)
+if [ ! -z "$WWWUSER" ]; then
+    usermod -u "$WWWUSER" sail || true
+fi
+
+# Создаём домашнюю директорию для Composer
+COMPOSER_HOME="${COMPOSER_HOME:-/home/sail/.composer}"
+if [ ! -d "$COMPOSER_HOME" ]; then
+    mkdir -p "$COMPOSER_HOME"
+fi
+chown -R sail:sail "$COMPOSER_HOME"
+chmod -R ugo+rw "$COMPOSER_HOME"
+
+# Если передан аргумент, запускаем его
+if [ $# -gt 0 ]; then
+    if [ "$PHP_USER" = "root" ]; then
+        exec "$@"
+    else
+        exec gosu "$PHP_USER" "$@"
+    fi
+else
+    # Иначе запускаем supervisord
+    exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+fi

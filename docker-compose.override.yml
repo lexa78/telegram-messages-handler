@@ -1,0 +1,72 @@
+services:
+  # Laravel контейнер
+  laravel.test:
+    ports:
+      - "8080:80"       # Контейнер слушает 80, пробрасываем на 8080 хоста
+      - "5173:5173"     # Vite dev server (пока не используется)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    networks:
+      - botnet  # та же сеть, что и RabbitMQ контейнера бота
+
+  #Custom RabbitMQ Consumer
+  telegram-consumer:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+      args:
+        WWWGROUP: '${WWWGROUP}'
+    command: php artisan telegram:consume
+    environment:
+      COMPOSER_HOME: /home/sail/.composer
+      SUPERVISOR_PHP_USER: sail
+      WWWUSER: 1337
+    volumes:
+      - '.:/var/www/html'  # <--- добавляем монтирование кода
+    depends_on:
+      - laravel.test
+    restart: unless-stopped
+    networks:
+      - botnet
+      - sail
+
+  # Laravel Queue Worker
+  queue-worker:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+      args:
+        WWWGROUP: '${WWWGROUP}'
+    command: >
+      php artisan queue:work rabbitmq
+      --queue=laravel.jobs
+      --sleep=0
+      --tries=1
+      --daemon
+    environment:
+      COMPOSER_HOME: /home/sail/.composer
+      SUPERVISOR_PHP_USER: sail
+      WWWUSER: 1337
+    volumes:
+      - '.:/var/www/html'
+    depends_on:
+      - laravel.test
+    restart: unless-stopped
+    networks:
+      - botnet
+      - sail
+
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: memcached
+    ports:
+      - "11211:11211"
+    networks:
+      - botnet
+
+networks:
+  botnet:
+    driver: bridge   # используем уже существующую сеть, где находится RabbitMQ бота
