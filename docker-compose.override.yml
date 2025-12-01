@@ -44,7 +44,35 @@ services:
       php artisan queue:work rabbitmq
       --queue=laravel.jobs
       --sleep=0
-      --tries=1
+      --tries=3
+      --backoff=5
+      --daemon
+    environment:
+      COMPOSER_HOME: /home/sail/.composer
+      SUPERVISOR_PHP_USER: sail
+      WWWUSER: 1337
+    volumes:
+      - '.:/var/www/html'
+    depends_on:
+      - laravel.test
+    restart: unless-stopped
+    networks:
+      - botnet
+      - sail
+
+  # Exchange Queue Worker
+  exchange-worker:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+      args:
+        WWWGROUP: '${WWWGROUP}'
+    command: >
+      php artisan queue:work rabbitmq
+      --queue=exchange.orders
+      --sleep=0
+      --tries=3
+      --backoff=5
       --daemon
     environment:
       COMPOSER_HOME: /home/sail/.composer

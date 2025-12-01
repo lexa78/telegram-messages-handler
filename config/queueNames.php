@@ -8,4 +8,5 @@ declare(strict_types=1);
 return [
     'raw' => 'telegram.raw',
     'processed' => 'laravel.jobs',
+    'exchange' => 'exchange.orders',
 ];

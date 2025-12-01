@@ -2,7 +2,7 @@
 
 namespace App\Providers;
 
-use App\Patterns\Adapters\Exchange\BybitApi;
+use App\Patterns\Adapters\Exchange\BybitApiJob;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -17,8 +17,8 @@ class ExchangeServiceProvider extends ServiceProvider
     {
         // Если работа будет только с одной биржей, то нужно будет этот Singleton заменить на Api Class своей биржи
         // Singleton для Bybit
-        $this->app->singleton(BybitApi::class, function ($app) {
-            return new BybitApi();
+        $this->app->singleton(BybitApiJob::class, function ($app) {
+            return new BybitApiJob();
         });
 
         // Если планирутся работа с несколькими биржами, то ниже добавляем нужные Singletons

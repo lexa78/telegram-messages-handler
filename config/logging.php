@@ -127,13 +127,6 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
-        'skippedCannels' => [
-            'driver' => 'single',
-            'path' => storage_path('logs/skippedCannels.log'),
-            'level' => env('LOG_LEVEL', 'debug'),
-            'replace_placeholders' => true,
-        ],
-
         'unhandledMessages' => [
             'driver' => 'single',
             'path' => storage_path('logs/unhandledMessages.log'),
@@ -141,9 +134,9 @@ return [
             'replace_placeholders' => true,
         ],
 
-        'skippedMessages' => [
+        'skippedMessagesFromJob' => [
             'driver' => 'single',
-            'path' => storage_path('logs/skippedMessages.log'),
+            'path' => storage_path('logs/skippedMessagesFromJob.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
         ],
