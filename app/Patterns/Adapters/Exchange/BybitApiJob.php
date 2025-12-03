@@ -4,13 +4,14 @@ declare(strict_types=1);
 
 namespace App\Patterns\Adapters\Exchange;
 
+use App\Exceptions\Exchanges\AbstractExchangeException;
+use App\Exceptions\Exchanges\Price\GetPriceFromExchangeResponseException;
+use App\Exceptions\Exchanges\Price\GetTickerException;
+use Illuminate\Support\Facades\Http;
+
 class BybitApiJob extends AbstractExchangeApi
 {
-    protected function getPrice(string $symbol): float
-    {
-        // todo запрос к /v5/market/tickers или WebSocket
-        return 0.0;
-    }
+    protected const string EXCHANGE_NAME  = 'bybit';
 
     protected function placeOrder(array $orderData): array
     {
@@ -32,8 +33,15 @@ class BybitApiJob extends AbstractExchangeApi
 
     public function handle(): void
     {
-        //получаем актуальную информацию о цене
-        $price = $this->getPrice($this->orderData['symbol']);
+        // подготавливаем пару для отправки по api
+        $symbol = $this->prepareSymbol($this->orderData['symbol']);
+        // получаем актуальную информацию о цене
+        $url = $this->apiUrlBeginning . '/v5/market/tickers';
+        $price = $this->getPrice($url, $symbol);
+
+        // получаем лимиты для корректных данных при постановке ордера
+        $url = $this->apiUrlBeginning . '/v5/market/instruments-info';
+        $limits = $this->getLimits($url, $symbol);
 
         //рассчитываем количество
         // todo написать формулу правильно (например, проверить, что price > 0)

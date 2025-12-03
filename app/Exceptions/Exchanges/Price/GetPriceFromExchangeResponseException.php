@@ -1,0 +1,15 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Exceptions\Exchanges\Price;
+
+use App\Exceptions\Exchanges\AbstractExchangeException;
+use Throwable;
+
+/**
+ * Ошибка при получении текущей цены пары из ответа от биржи
+ */
+class GetPriceFromExchangeResponseException extends AbstractExchangeException
+{
+}

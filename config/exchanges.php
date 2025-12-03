@@ -11,6 +11,7 @@ return [
         env('DEFAULT_EXCHANGE_FOR_TADE', 'bybit') => [
             'api_key' => env('BYBIT_API_KEY'),
             'api_secret' => env('BYBIT_API_SECRET'),
+            'api_url' => env('BYBIT_API_URL'),
         ],
         //'binance' => '...', for example
     ],
