@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Exceptions\Exchanges\Price;
+namespace App\Exceptions\Exchanges\Traiding;
 
 use App\Exceptions\Exchanges\AbstractExchangeException;
 use Throwable;

@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Patterns\Factories\ExchangeFactory;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Обработка данных из канала Svr
@@ -26,14 +27,12 @@ class SvrChannelJob extends AbstractChannelJob
      * — отправляет запрос в биржу
      *
      */
-    public function __construct(private readonly array $data)
-    {
-    }
 
     public function handle(): void
     {
         if (!isset($this->data['data']['message']['message'])) {
-            // todo придумать, что делать с такими сообщениями
+            Log::channel('skippedMessagesFromJob')
+                ->error('Message not found', ['cameData' => $this->data]);
             return;
         }
         $message = $this->data['data']['message']['message'];
@@ -63,7 +62,13 @@ class SvrChannelJob extends AbstractChannelJob
 
         $entryFrom = $match[5] ?? null;
         $entryTo = $match[6] ?? null;
-        $entry = (empty($entryFrom) && empty($entryTo)) ? null : [$entryFrom, $entryTo];
+        if (empty($entryFrom) && empty($entryTo)) {
+            $entry = null;
+        } elseif (empty($entryFrom) || empty($entryTo)) {
+            $entry = (float) $entryFrom + (float) $entryTo;
+        } else {
+            $entry = ((float) $entryFrom + (float) $entryTo) / 2;
+        }
 
         $leverageFrom = $match[3] ?? null;
         $leverageTo = $match[4] ?? null;
@@ -82,11 +87,16 @@ class SvrChannelJob extends AbstractChannelJob
             return;
         }
 
+        $direction = $match[2] ?? null;
+        if ($direction !== null) {
+            $direction = trim(Str::lower($direction));
+            $direction = $direction === 'long' ? 'Buy' : 'Sell';
+        }
+
         $setOrderData = [
-            'exchange' => $exchangeName,
             'channelId' => $this->data['channelId'],
             'symbol' => $match[1] ?? null,
-            'side' => $match[2] ?? null,
+            'direction' => $direction,
             'entry' => $entry,
             'leverage' => ($leverage > 0 ? $leverage : 10),
             'targets' => $targets,
@@ -106,8 +116,12 @@ class SvrChannelJob extends AbstractChannelJob
             return;
         }
 
+        if (!is_array($setOrderData['targets'])) {
+            $setOrderData['targets'] = [$setOrderData['targets']];
+        }
+
         // Создаём нужный объект через фабрику
-        $exchangeJob = ExchangeFactory::make($setOrderData['exchange'], $setOrderData);
+        $exchangeJob = ExchangeFactory::make($exchangeName, $setOrderData);
 
         if ($exchangeJob === null) {
             Log::channel('skippedMessagesFromJob')

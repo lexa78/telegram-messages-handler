@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Models\Channel;
 use App\Patterns\Factories\JobFactory;
-use App\Repositories\ChannelRepository;
-use App\Services\ChannelService;
+use App\Services\Channels\ChannelService;
 use Exception;
 use Illuminate\Console\Command;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
@@ -23,11 +22,11 @@ class TelegramConsume extends Command
     /**
      * @throws Exception
      */
-    public function handle(ChannelService $channelService, ChannelRepository $channelRepository): void
+    public function handle(ChannelService $channelService): void
     {
         $channelsInfo = $channelService->getAllCached();
 
-        $rabbitmqSettings = config('queue.rabbitmq');
+        $rabbitmqSettings = config('queue.connections.rabbitmq');
 
         $this->info("Connecting to RabbitMQ...");
 
@@ -48,7 +47,7 @@ class TelegramConsume extends Command
 
         $this->info('Waiting for messages in queue: '.$queueNames['raw']);
 
-        $map = config('channels');
+        $channelsMap = config('channels');
 
         $channel->basic_consume(
             $queueNames['raw'],
@@ -57,7 +56,7 @@ class TelegramConsume extends Command
             true,
             false,
             false,
-            function (AMQPMessage $msg) use($channelRepository, $channelService, $channelsInfo, $map): void {
+            function (AMQPMessage $msg) use($channelService, $channelsInfo, $channelsMap, $queueNames): void {
                 $msgBody = $msg->getBody();
                 $data = json_decode($msgBody, true);
 
@@ -78,10 +77,12 @@ class TelegramConsume extends Command
                     return;
                 }
 
+                /** @var Channel $channel */
                 $channel = $channelsInfo->get($data['channelId']);
                 // если канала нет в кэше, автоматически, его нет в БД, сохраняем и там и там
                 if ($channel === null) {
-                    $channelService->findOrCreate($data['channelId'], $data['channelTitle']);
+                    $channelsInfo = $channelService->findOrCreate((string) $data['channelId'], $data['channelTitle']);
+                    $channel = $channelsInfo->get($data['channelId']);
                 }
 
                 // если канал не помечен, что в нем может быть нужная информация, то пропускаем сообщение
@@ -91,16 +92,17 @@ class TelegramConsume extends Command
                 }
 
                 // если канал помечен, но его Job не найдена, надо будет разбираться по логам
-                if (!isset($map[$data['channelId']])) {
+                if (!isset($channelsMap[$channel->cid])) {
                     Log::channel('unhandledMessages')
-                        ->error('The file config/channels.php don\'t contain class name for channelId = '.$data['channelId'],
+                        ->error('The file config/channels.php don\'t contain class name for channelId = '.$channel->cid,
                             [
                                 'raw' => $msgBody,
                             ]);
                     return;
                 }
 
-                $className = $map[$data['channelId']];
+                $className = $channelsMap[$channel->cid];
+                $data['channelId'] = $channel->getKey();
 
                 $channelJob = JobFactory::make($className, $data);
 

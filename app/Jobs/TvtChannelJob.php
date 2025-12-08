@@ -29,9 +29,6 @@ class TvtChannelJob extends AbstractChannelJob
      * — отправляет запрос в биржу
      *
      */
-    public function __construct(private readonly array $data)
-    {
-    }
 
     public function handle(): void
     {

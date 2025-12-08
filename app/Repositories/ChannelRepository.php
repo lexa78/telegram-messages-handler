@@ -14,13 +14,13 @@ class ChannelRepository extends AbstractRepository
 {
     public function getAll(): Collection
     {
-        return Channel::query()->select(['cid', 'is_for_handle'])->get();
+        return Channel::query()->select(['id', 'cid', 'is_for_handle'])->get();
     }
 
     public function findOrCreate(string $channelTelegramId, string $channelName): Channel
     {
         return Channel::query()->firstOrCreate(
-            ['sid' => $channelTelegramId],
+            ['cid' => $channelTelegramId],
             ['name' => $channelName],
         );
     }

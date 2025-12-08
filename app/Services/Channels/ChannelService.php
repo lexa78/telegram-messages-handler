@@ -2,20 +2,18 @@
 
 declare(strict_types=1);
 
-namespace App\Services;
+namespace App\Services\Channels;
 
-use App\Enums\CacheKeysEnum;
+use App\Enums\Cache\CacheKeysEnum;
 use App\Repositories\ChannelRepository;
+use App\Services\AbstractCacheService;
 use Illuminate\Support\Facades\Cache;
 
 /**
  * Все необходимые действия с данными о каналах
  */
-class ChannelService
+class ChannelService extends AbstractCacheService
 {
-    // Сутки в секундах
-    const int CACHE_TTL = 86400;
-
     public function __construct(
         private readonly ChannelRepository $channelRepository,
     ) {
@@ -25,7 +23,7 @@ class ChannelService
     /**
      * Если в кэше нет ключа со всеми каналами, то запоминаем и отдаем
      */
-     public function getAllCached(): mixed
+    public function getAllCached(): mixed
     {
         return Cache::remember(CacheKeysEnum::AllChannelsKey->value, self::CACHE_TTL, function () {
             return $this->channelRepository->getAll()->keyBy('cid');
@@ -35,18 +33,9 @@ class ChannelService
     /**
      * Находит/создает канал и сохраняет его в Cache
      */
-    public function findOrCreate(string $channelTelegramId, string $channelName): void
+    public function findOrCreate(string $channelTelegramId, string $channelName): mixed
     {
         $this->channelRepository->findOrCreate($channelTelegramId, $channelName);
-        $this->refreshCache();
-    }
-
-    /**
-     * Перезаписываем кэш
-     */
-    public function refreshCache(): mixed
-    {
-        Cache::forget(CacheKeysEnum::AllChannelsKey->value);
-        return $this->getAllCached();
+        return $this->refreshCache(CacheKeysEnum::AllChannelsKey->value);
     }
 }

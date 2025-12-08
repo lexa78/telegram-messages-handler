@@ -13,6 +13,10 @@ class AbstractChannelJob implements ShouldQueue
 {
     use Queueable;
 
+    public function __construct(protected readonly array $data)
+    {
+    }
+
     /**
      * По этим словам буду определять, это сообщение с нужной информацией или нет
      */
@@ -65,10 +69,10 @@ class AbstractChannelJob implements ShouldQueue
     protected function checkIfAllNecessaryDataPresent(array $data): bool
     {
         return count(
-            array_filter(
-                array_intersect_key($data, self::NECESSARY_KEYS_FOR_SET_ORDER),
-            ),
-        ) === count(self::NECESSARY_KEYS_FOR_SET_ORDER);
+                array_filter(
+                    array_intersect_key($data, self::NECESSARY_KEYS_FOR_SET_ORDER),
+                ),
+            ) === count(self::NECESSARY_KEYS_FOR_SET_ORDER);
     }
 
     /**
