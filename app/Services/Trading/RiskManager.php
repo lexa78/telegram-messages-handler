@@ -106,18 +106,18 @@ final class RiskManager
             return 0.0;
         }
 
-        if ($minOrderValue !== null) {
-            $orderValue = $qty * $entryPrice;
-            if ($orderValue < $minOrderValue) {
-                // попробовать увеличить qty до minOrderValue (с учётом шага)
-                $neededQty = ceil(($minOrderValue / $entryPrice) / $qtyStep) * $qtyStep;
-                if ($neededQty < $minQty) {
-                    $neededQty = $minQty;
-                }
-                // если after rounding still > original qty, вернуть neededQty
-                return $this->applyQtyStep($neededQty, $qtyStep);
-            }
-        }
+//        if ($minOrderValue !== null) {
+//            $orderValue = $qty * $entryPrice;
+//            if ($orderValue < $minOrderValue) {
+//                // попробовать увеличить qty до minOrderValue (с учётом шага)
+//                $neededQty = ceil(($minOrderValue / $entryPrice) / $qtyStep) * $qtyStep;
+//                if ($neededQty < $minQty) {
+//                    $neededQty = $minQty;
+//                }
+//                // если after rounding still > original qty, вернуть neededQty
+//                return $this->applyQtyStep($neededQty, $qtyStep);
+//            }
+//        }
 
         return $qty;
     }

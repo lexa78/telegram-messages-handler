@@ -351,11 +351,6 @@ abstract class AbstractExchangeApi
         return $response;
     }
 
-    protected function placeTakeProfit(array $orderData): array
-    {
-
-    }
-
     // применение middleware RateLimited, чтобы не было слишком частых запросов в биржу, чтобы не забанили
     public function middleware(): array
     {

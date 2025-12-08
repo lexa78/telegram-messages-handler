@@ -22,12 +22,6 @@ class BybitApiJob extends AbstractExchangeApi
 {
     protected const string EXCHANGE_NAME = 'bybit';
 
-    protected function placeTakeProfit(array $orderData): array
-    {
-        // todo  POST /v5/stop-order с reduceOnly
-        return [];
-    }
-
     public function handle(): void
     {
         // подготавливаем пару для отправки по api
