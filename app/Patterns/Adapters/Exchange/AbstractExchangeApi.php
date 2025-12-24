@@ -21,6 +21,7 @@ use App\Services\Trading\RiskManager;
 use Illuminate\Queue\Middleware\RateLimited;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -32,6 +33,8 @@ abstract class AbstractExchangeApi
 
     // todo потом эту константу надо будет вынести в админку, чтобы там можно было менять этот процент
     protected const float RISK_PERCENT_FOR_LOST = 0.03;
+
+    protected const float MIN_MONEY_IN_ORDER = 0.0;
 
     protected const string MARKET_LINEAR_CATEGORY = 'linear';
 
@@ -60,12 +63,7 @@ abstract class AbstractExchangeApi
 
     protected string $apiUrlBeginning;
 
-    public function __construct(
-        protected readonly RiskManager $riskManager,
-        protected readonly OrderRepository $orderRepository,
-        protected readonly OrderTargetRepository $orderTargetRepository,
-        protected array $orderData
-    ) {
+    public function __construct(protected array $orderData) {
         $exchangeName = config('exchanges.default_exchange');
         $apiKeys = config('exchanges.api_keys.' . $exchangeName);
         $this->apiKey = $apiKeys['api_key'];
@@ -73,7 +71,11 @@ abstract class AbstractExchangeApi
         $this->apiUrlBeginning = $apiKeys['api_url'];
     }
 
-    abstract public function handle(): void;
+    abstract public function handle(
+        RiskManager $riskManager,
+        OrderRepository $orderRepository,
+        OrderTargetRepository $orderTargetRepository,
+    ): void;
 
     /**
      * Формирует заголовки для подписания GET запросов
@@ -268,8 +270,8 @@ abstract class AbstractExchangeApi
         $body = [
             'category' => self::MARKET_LINEAR_CATEGORY,
             'symbol' => $symbol,
-            'buyLeverage' => $this->orderData['leverage'],
-            'sellLeverage' => $this->orderData['leverage'],
+            'buyLeverage' => (string) $this->orderData['leverage'],
+            'sellLeverage' => (string) $this->orderData['leverage'],
         ];
 
         try {
@@ -277,6 +279,20 @@ abstract class AbstractExchangeApi
                 ->post($url, $body)
                 ->throw()
                 ->json();
+            if ($response['retCode'] !== 0) {
+                Log::channel('exchangeApiErrors')
+                    ->error(
+                        'Ошибка Установки плеча для пары',
+                        [
+                            'channel_id' => $this->orderData['channelId'],
+                            'url' => $url,
+                            'params' => $body,
+                            'orderData' => $this->orderData,
+                            'responseMessage' => $response['retMsg'],
+                            'responseCode' => $response['retCode'],
+                        ],
+                    );
+            }
         } catch (Throwable $e) {
             throw new SetLeverageException(
                 message: 'Ошибка при постановке плеча для пары',
@@ -334,6 +350,20 @@ abstract class AbstractExchangeApi
                 ->post($url, $body)
                 ->throw()
                 ->json();
+            if ($response['retCode'] !== 0) {
+                Log::channel('exchangeApiErrors')
+                    ->error(
+                        'Ошибка Установки stopLoss',
+                        [
+                            'channel_id' => $this->orderData['channelId'],
+                            'url' => $url,
+                            'params' => $body,
+                            'orderData' => $this->orderData,
+                            'responseMessage' => $response['retMsg'],
+                            'responseCode' => $response['retCode'],
+                        ],
+                    );
+            }
         } catch (Throwable $e) {
             throw new SetStopLossException(
                 message: 'Ошибка при постановке stopLoss',
@@ -349,6 +379,20 @@ abstract class AbstractExchangeApi
         }
 
         return $response;
+    }
+
+    /**
+     * Если в весах для takeProfit есть хоть один 0, то сворачиваем все takeProfit в самый первый
+     * и назначаем ему totalQty
+     */
+    protected function rebuildTargetsIfWeightsEmpty(array $targets, array $weights, float $totalQty): array
+    {
+        $weights = array_filter($weights);
+        if (count($targets) > count($weights)) {
+            return [[head($targets)], [$totalQty]];
+        }
+
+        return [$targets, $weights];
     }
 
     // применение middleware RateLimited, чтобы не было слишком частых запросов в биржу, чтобы не забанили

@@ -127,12 +127,12 @@ final class RiskManager
      *
      * requiredMargin = (qty * entryPrice) / leverage
      *
-     * @param float $qty
-     * @param float $entryPrice
-     * @param float $leverage
+     * @param  float  $qty
+     * @param  float  $entryPrice
+     * @param  int  $leverage
      * @return float
      */
-    public function requiredMargin(float $qty, float $entryPrice, float $leverage): float
+    public function requiredMargin(float $qty, float $entryPrice, int $leverage): float
     {
         if ($leverage <= 0) {
             throw new InvalidArgumentException('Leverage must be > 0.');
@@ -148,7 +148,7 @@ final class RiskManager
      *
      * @param float $qty
      * @param float $entryPrice
-     * @param float $leverage
+     * @param int $leverage
      * @param float $availableMargin
      * @param float $qtyStep
      * @return float
@@ -156,7 +156,7 @@ final class RiskManager
     public function fitQtyByMargin(
         float $qty,
         float $entryPrice,
-        float $leverage,
+        int $leverage,
         float $availableMargin,
         float $qtyStep
     ): float {
@@ -180,12 +180,13 @@ final class RiskManager
      *
      * Возвращает массив qty по каждому tp (в порядке targets).
      *
-     * @param float $totalQty
-     * @param int $targetsCount
-     * @param array|null $targetsWeights
+     * @param  float  $totalQty
+     * @param  int  $targetsCount
+     * @param  float  $qtyStep
+     * @param  array|null  $targetsWeights
      * @return float[]
      */
-    public function splitTargetsQty(float $totalQty, int $targetsCount, ?array $targetsWeights = null): array
+    public function splitTargetsQty(float $totalQty, int $targetsCount, float $qtyStep, ?array $targetsWeights = null): array
     {
         if ($targetsCount <= 0) {
             return [];
@@ -211,7 +212,7 @@ final class RiskManager
 
         $result = [];
         foreach ($weights as $w) {
-            $result[] = $totalQty * $w;
+            $result[] = $this->applyQtyStep($totalQty * $w, $qtyStep);
         }
 
         return $result;

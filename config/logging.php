@@ -140,6 +140,13 @@ return [
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
         ],
+
+        'exchangeApiErrors' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/exchangeApiErrors.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'replace_placeholders' => true,
+        ],
     ],
 
 ];

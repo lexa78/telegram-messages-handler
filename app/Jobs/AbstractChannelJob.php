@@ -44,11 +44,12 @@ class AbstractChannelJob implements ShouldQueue
      */
     private const array NECESSARY_KEYS_FOR_SET_ORDER = [
         'symbol' => true,
-        'side' => true,
-        'entry' => true,
+        'direction' => true,
         'targets' => true,
         'stopLoss' => true,
     ];
+
+    public const string NOT_FOUND_PLACEHOLDER = 'NF';
 
     protected string $defaultExchange;
 

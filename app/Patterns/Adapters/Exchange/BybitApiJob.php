@@ -9,12 +9,12 @@ use App\Enums\Trading\OrderStatusesEnum;
 use App\Enums\Trading\OrderTypesEnum;
 use App\Enums\Trading\TriggerTypesEnum;
 use App\Enums\Trading\TypesOfTriggerWorkEnum;
-use App\Exceptions\Exchanges\AbstractExchangeException;
-use App\Exceptions\Exchanges\Traiding\GetPriceFromExchangeResponseException;
-use App\Exceptions\Exchanges\Traiding\GetTickerException;
+use App\Jobs\AbstractChannelJob;
+use App\Repositories\Trading\OrderRepository;
+use App\Repositories\Trading\OrderTargetRepository;
+use App\Services\Trading\RiskManager;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -22,13 +22,27 @@ class BybitApiJob extends AbstractExchangeApi
 {
     protected const string EXCHANGE_NAME = 'bybit';
 
-    public function handle(): void
-    {
+    protected const float MIN_MONEY_IN_ORDER = 5.0;
+
+    public function handle(
+        RiskManager $riskManager,
+        OrderRepository $orderRepository,
+        OrderTargetRepository $orderTargetRepository,
+    ): void {
         // подготавливаем пару для отправки по api
         $symbol = $this->prepareSymbol($this->orderData['symbol']);
         // получаем актуальную информацию о цене
         $url = $this->apiUrlBeginning.'/v5/market/tickers';
-        $price = $this->getPrice($url, $symbol);
+        $this->orderData['entry'] = $this->getPrice($url, $symbol);
+        // если в сообщении не был найден stopLoss, то берем 5% от цены
+        if ($this->orderData['stopLoss'] === AbstractChannelJob::NOT_FOUND_PLACEHOLDER) {
+            $entry = (float) $this->orderData['entry'];
+            if ($this->orderData['direction'] === AbstractExchangeApi::LONG_DIRECTION) {
+                $this->orderData['stopLoss'] = $entry - ($entry * 0.05);
+            } else {
+                $this->orderData['stopLoss'] = $entry + ($entry * 0.05);
+            }
+        }
 
         // получаем лимиты для корректных данных при постановке ордера
         $url = $this->apiUrlBeginning.'/v5/market/instruments-info';
@@ -42,23 +56,37 @@ class BybitApiJob extends AbstractExchangeApi
         $url = $this->apiUrlBeginning.'/v5/account/wallet-balance';
         // USDT на торговом кошельке
         $accountBalance = $this->getCurrentBalance($url);
+        if ($accountBalance < self::MIN_MONEY_IN_ORDER) {
+            Log::channel('exchangeApiErrors')
+                ->error(
+                    'На балансе всего $' . $accountBalance,
+                    [
+                        'channel_id' => $this->orderData['channelId'],
+                        'orderData' => $this->orderData,
+                    ],
+                );
+            return;
+        }
 
-        // Сколько денег хотим использовать (3% от баланса)
-        $balanceToUse = $this->riskManager->balanceToUseFromPercent($accountBalance, self::RISK_PERCENT_FOR_LOST);
+        // Сколько денег хотим использовать (3% от баланса) или минимальную сумму по требованиям биржи
+        $balanceToUse = $riskManager->balanceToUseFromPercent($accountBalance, self::RISK_PERCENT_FOR_LOST);
+        if ($balanceToUse < self::MIN_MONEY_IN_ORDER) {
+            $balanceToUse = self::MIN_MONEY_IN_ORDER;
+        }
 
         // Считаем неокругленный qty по риску (linear)
-        $rawQty = $this->riskManager->calculateQtyFromRiskLinear(
+        $rawQty = $riskManager->calculateQtyFromRiskLinear(
             $balanceToUse,
-            $this->orderData['entry'],
-            $this->orderData['stopLoss'],
+            (float) $this->orderData['entry'],
+            (float) $this->orderData['stopLoss'],
         );
 
         // Приводим к шагу и проверяем minOrderValue/minQty
-        $qty = $this->riskManager->applyQtyStep($rawQty, $qtyStep);
-        $qty = $this->riskManager->enforceLimits($qty, $qtyStep, $minQty, $this->orderData['entry']);
+        $qty = $riskManager->applyQtyStep($rawQty, $qtyStep);
+        $qty = $riskManager->enforceLimits($qty, $qtyStep, $minQty, $this->orderData['entry']);
 
         // Если необходимая маржа > $accountBalance, уменьшаем qty
-        $qty = $this->riskManager->fitQtyByMargin(
+        $qty = $riskManager->fitQtyByMargin(
             $qty,
             $this->orderData['entry'],
             $this->orderData['leverage'],
@@ -86,9 +114,24 @@ class BybitApiJob extends AbstractExchangeApi
             'symbol' =>	$symbol,
             'side' => $this->orderData['direction'],
             'orderType' => self::MARKET_ORDER_TYPE,
-            'qty' => $qty,
+            'qty' => (string) $qty,
         ];
         $response = $this->placeOrderOrTp($url, $body);
+        if ($response['retCode'] !== 0) {
+            Log::channel('exchangeApiErrors')
+                ->error(
+                    'Ошибка Установки Order',
+                    [
+                        'channel_id' => $this->orderData['channelId'],
+                        'url' => $url,
+                        'params' => $body,
+                        'orderData' => $this->orderData,
+                        'responseMessage' => $response['retMsg'],
+                        'responseCode' => $response['retCode'],
+                    ],
+                );
+            return;
+        }
         $now = Carbon::createFromTimestamp($response['time']);
         $orderDataToSave = [
             'exchange_order_id' => $response['result']['orderId'],
@@ -110,18 +153,20 @@ class BybitApiJob extends AbstractExchangeApi
         ];
 
         // ставим stopLoss
+        // todo сначала надо проверить, что sl еще не проставлен GET /v5/position/list
         $url = $this->apiUrlBeginning.'/v5/position/trading-stop';
         $body = [
             'category' => self::MARKET_LINEAR_CATEGORY,
             'symbol' => $symbol,
             'tpslMode' => self::FULL_CLOSE_LIMIT_MODE,
             'positionIdx' => 0,
-            'stopLoss' => $this->orderData['stopLoss'],
+            'stopLoss' => (string) $this->orderData['stopLoss'],
             'slTriggerBy' => self::PRICE_TYPE_FOR_SL_TRIGGER_WORK,
         ];
         $response = $this->placeStopLoss($url, $body);
         $now = Carbon::createFromTimestamp($response['time']);
         $stopLossDataToSave = [
+            'exchange_tp_id' => 'SL',
             'type' => TriggerTypesEnum::SL->value,
             'price' => $this->orderData['stopLoss'],
             'qty' => $qty,
@@ -139,12 +184,32 @@ class BybitApiJob extends AbstractExchangeApi
             'orderType' => self::LIMIT_ORDER_TYPE,
             'reduceOnly' => true,
         ];
-        $weights = $this->riskManager->splitTargetsQty($qty, count($this->orderData['targets']));
+        $weights = $riskManager->splitTargetsQty($qty, count($this->orderData['targets']), $qtyStep);
+        [$this->orderData['targets'], $weights] =
+            $this->rebuildTargetsIfWeightsEmpty($this->orderData['targets'], $weights, $qty);
         $takeProfitDataToSave = [];
         foreach ($this->orderData['targets'] as $key => $target) {
-            $body['price'] = $target;
-            $body['qty'] = $weights[$key];
+            $body['price'] = (string) $target;
+            $body['qty'] = (string) $weights[$key];
+            if ($key === 0) {
+                continue;
+            }
             $response = $this->placeOrderOrTp($url, $body);
+            if ($response['retCode'] !== 0) {
+                Log::channel('exchangeApiErrors')
+                    ->error(
+                        'Ошибка Установки takeProfit',
+                        [
+                            'channel_id' => $this->orderData['channelId'],
+                            'url' => $url,
+                            'params' => $body,
+                            'orderData' => $this->orderData,
+                            'responseMessage' => $response['retMsg'],
+                            'responseCode' => $response['retCode'],
+                        ],
+                    );
+                return;
+            }
             $now = Carbon::createFromTimestamp($response['time']);
             $takeProfitDataToSave[] = [
                 'exchange_tp_id' => $response['result']['orderId'],
@@ -159,14 +224,14 @@ class BybitApiJob extends AbstractExchangeApi
 
         DB::beginTransaction();
         try {
-            $id = $this->orderRepository->insertGetId($orderDataToSave);
+            $id = $orderRepository->insertGetId($orderDataToSave);
             $stopLossDataToSave['order_id'] = $id;
             foreach ($takeProfitDataToSave as &$takeProfitData) {
                 $takeProfitData['order_id'] = $id;
             }
             unset($takeProfitData);
             $takeProfitDataToSave[] = $stopLossDataToSave;
-            $this->orderTargetRepository->insert($takeProfitDataToSave);
+            $orderTargetRepository->insert($takeProfitDataToSave);
         } catch (Throwable $e) {
             Log::error('Ошибка записи информации об ордере. Описание: ' . $e->getMessage(), [
                 'orderDataToSave' => $orderDataToSave,

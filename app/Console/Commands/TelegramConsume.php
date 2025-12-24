@@ -28,7 +28,7 @@ class TelegramConsume extends Command
 
         $rabbitmqSettings = config('queue.connections.rabbitmq');
 
-        $this->info("Connecting to RabbitMQ...");
+        $this->info('Connecting to RabbitMQ...' . '['. now()->format('Y-m-d H:i:s').']');
 
         $connection = new AMQPStreamConnection(
             $rabbitmqSettings['host'],
@@ -45,7 +45,7 @@ class TelegramConsume extends Command
 
         $channel = $connection->channel();
 
-        $this->info('Waiting for messages in queue: '.$queueNames['raw']);
+        $this->info('Waiting for messages in queue: '.$queueNames['raw'] . '['. now()->format('Y-m-d H:i:s').']');
 
         $channelsMap = config('channels');
 
@@ -75,6 +75,15 @@ class TelegramConsume extends Command
                             'raw' => $msgBody,
                         ]);
                     return;
+                }
+
+                // попытка выяснить, почему не читаются сообщения из этого канала
+                // todo как выясню, надо будет удалить
+                if ($data['channelId'] === '-1002513913321') {
+                    Log::channel('unhandledMessages')
+                        ->error('Message from -1002513913321 channel', [
+                            'raw' => $msgBody,
+                        ]);
                 }
 
                 /** @var Channel $channel */

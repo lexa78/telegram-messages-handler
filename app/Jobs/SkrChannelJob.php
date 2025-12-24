@@ -14,21 +14,6 @@ use Illuminate\Support\Str;
  */
 class SkrChannelJob extends AbstractChannelJob
 {
-    /**
-     * todo после того, как все будет сделано, нужно будет подумать, как правильно разделить
-     * эту Job чтобы не нарушать принцип SRP
-     * пока идея такая
-     * Job 1: ChannelMessageParseJob
-     *
-     * — парсит сообщение Telegram
-     * — создаёт нормализованные данные (symbol, entry, targets…)
-     *
-     * Job 2: CreateExchangeOrderJob
-     *
-     * — отправляет запрос в биржу
-     *
-     */
-
     public function handle(): void
     {
         if (!isset($this->data['data']['message']['message'])) {
@@ -68,9 +53,13 @@ class SkrChannelJob extends AbstractChannelJob
         if (empty($entryFrom) && empty($entryTo)) {
             $entry = null;
         } elseif (empty($entryFrom) || empty($entryTo)) {
-            $entry = (float) $entryFrom + (float) $entryTo;
+            $entryFrom = empty($entryFrom) ? 0 : (float) str_replace(',', '.', (string) $entryFrom);
+            $entryTo = empty($entryTo) ? 0 : (float) str_replace(',', '.', (string) $entryTo);
+            $entry = $entryFrom + $entryTo;
         } else {
-            $entry = ((float) $entryFrom + (float) $entryTo) / 2;
+            $entryFrom = (float) str_replace(',', '.', (string) $entryFrom);
+            $entryTo = (float) str_replace(',', '.', (string) $entryTo);
+            $entry = ($entryFrom + $entryTo) / 2;
         }
 
         // наименование биржи, по этому ключу фабрика сформирует нужный API объект
@@ -91,14 +80,32 @@ class SkrChannelJob extends AbstractChannelJob
             $direction = $direction === 'long' ? AbstractExchangeApi::LONG_DIRECTION : AbstractExchangeApi::SHORT_DIRECTION;
         }
 
+        $leverage = empty($match[3]) ? 10 : (int) $match[3];
+
+        if (! empty($targets)) {
+            if (is_array($targets)) {
+                foreach ($targets as &$target) {
+                    $target = (float) str_replace(',', '.', (string) $target);
+                }
+                unset($target);
+            } else {
+                $targets = (float) str_replace(',', '.', (string) $targets);
+            }
+        }
+
+        $stopLoss = $match[7] ?? null;
+        if ($stopLoss !== null) {
+            $stopLoss = (float) str_replace(',', '.', (string) $stopLoss);
+        }
+
         $setOrderData = [
             'channelId' => $this->data['channelId'],
             'symbol' => $match[1] ?? null,
             'direction' => $direction,
             'entry' => $entry,
-            'leverage' => $match[3] ?? 10,
+            'leverage' => $leverage,
             'targets' => $targets,
-            'stopLoss' => $match[7] ?? null,
+            'stopLoss' => $stopLoss,
         ];
 
         if (!$this->checkIfAllNecessaryDataPresent($setOrderData)) {

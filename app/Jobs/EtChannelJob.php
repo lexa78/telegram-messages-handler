@@ -4,14 +4,15 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Patterns\Adapters\Exchange\AbstractExchangeApi;
 use App\Patterns\Factories\ExchangeFactory;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
- * Обработка данных из канала BKV
+ * Обработка данных из канала Et
  */
-class BkvChannelJob extends AbstractChannelJob
+class EtChannelJob extends AbstractChannelJob
 {
     public function handle(): void
     {
@@ -28,59 +29,15 @@ class BkvChannelJob extends AbstractChannelJob
         }
 
         // парсим сообщение и получаем необходимые данные
-        // флаги: s - dotall, i - case-insensitive, u - unicode
-        $pattern = '/coin\s*:?\s*#?([\w\/-]+).*?'            // 1 coin
-            . '(long|short)\b.*?'                           // 2 direction
-            . 'entry\s*:\s*([\d.]+)\s*-\s*([\d.]+).*?'      // 3 entry from, 4 entry to
-            . 'leverage\s*:\s*(\d+)x.*?'                    // 5 leverage
-            . '(?:target|tp)\s*\d*\s*:\s*([\s\S]*?)'        // 6 raw targets block (non-greedy)
-            . 'stop(?:loss)?\s*:\s*([\d.]+)/siu';           // 7 stoploss
-
         $parseResult = preg_match(
-            $pattern,
+            '/💰\s*([A-Z0-9]+)\s+(long|short)\s+([0-9\-xх]+).*?Вход:\s*([^\n]+).*?Цели:\s*([\d\.\,\s]+).*?Стоп:\s*([\d\.]+)/isu',
             $message,
-            $match,
+            $match
         );
         if ($parseResult === false || $parseResult === 0) {
             Log::channel('skippedMessagesFromJob')
                 ->error('Parsing failed', ['msg' => $message, 'channelId' => $this->data['channelId']]);
             return;
-        }
-
-        // Вытаскиваем все Targets
-        $targetsRaw = $match[6] ?? null;
-        if ($targetsRaw !== null) {
-            preg_match_all('/\d+(?:\.\d+)?/', $targetsRaw, $all);
-            $targets = array_values(array_filter($all[0], function (string $v): bool {
-                // оставляем, если есть точка или длина >= 3 (целые >=100),
-                // либо если число >= 10 (если у тебя цены могут быть 10+)
-                if (strpos($v, '.') !== false) {
-                    return true;
-                }
-                if (mb_strlen($v) >= 3) {
-                    return true;
-                }
-                if (floatval($v) >= 10) {
-                    return true;
-                }
-                return false; // отбрасываем "1","2","3" и т.п.
-            }));
-        } else {
-            $targets = [];
-        }
-
-        $entryFrom = $match[3] ?? null;
-        $entryTo = $match[4] ?? null;
-        if (empty($entryFrom) && empty($entryTo)) {
-            $entry = null;
-        } elseif (empty($entryFrom) || empty($entryTo)) {
-            $entryFrom = empty($entryFrom) ? 0 : (float) str_replace(',', '.', (string) $entryFrom);
-            $entryTo = empty($entryTo) ? 0 : (float) str_replace(',', '.', (string) $entryTo);
-            $entry = $entryFrom + $entryTo;
-        } else {
-            $entryFrom = (float) str_replace(',', '.', (string) $entryFrom);
-            $entryTo = (float) str_replace(',', '.', (string) $entryTo);
-            $entry = ($entryFrom + $entryTo) / 2;
         }
 
         // наименование биржи, по этому ключу фабрика сформирует нужный API объект
@@ -98,37 +55,54 @@ class BkvChannelJob extends AbstractChannelJob
         $direction = $match[2] ?? null;
         if ($direction !== null) {
             $direction = trim(Str::lower($direction));
-            $direction = $direction === 'long' ? 'Buy' : 'Sell';
+            $direction = $direction === 'long' ? AbstractExchangeApi::LONG_DIRECTION : AbstractExchangeApi::SHORT_DIRECTION;
         }
 
-        $leverage = empty($match[5]) ? 10 : (int) $match[5];
-
-        if (! empty($targets)) {
-            if (is_array($targets)) {
-                foreach ($targets as &$target) {
-                    $target = (float) str_replace(',', '.', (string) $target);
-                }
-                unset($target);
-            } else {
-                $targets = (float) str_replace(',', '.', (string) $targets);
+        $leverage = $match[3] ?? null;
+        if ($leverage === null) {
+            $leverage = 10;
+        } else {
+            $leverage = Str::replace(['х', 'x'], '', $leverage); // русскую х -> английскую x
+            if (Str::contains($leverage, '-')) {
+                $levArr = array_map('trim', explode('-', $leverage));
+                $levArr = array_map(
+                    function (string $item) {
+                        return (int) $item;
+                    },
+                    $levArr,
+                );
+                $leverage = (int) round(array_sum($levArr) / count($levArr));
             }
         }
 
-        $stopLoss = $match[7] ?? null;
+        $entry = $m[4] ?? null;
+        if ($entry !== null) {
+            $entry = (float) trim($entry);
+        }
+
+        $targets = $match[5] ?? null;
+        if ($targets !== null) {
+            $targets = array_values(
+                array_filter(
+                    array_map('trim', explode(',', $match[5]))
+                )
+            );
+            foreach ($targets as &$target) {
+                $target = (float) str_replace(',', '.', (string) $target);
+            }
+            unset($target);
+        }
+
+        $stopLoss = $match[6] ?? null;
         if ($stopLoss !== null) {
             $stopLoss = (float) str_replace(',', '.', (string) $stopLoss);
-        }
-
-        $symbol = $match[1] ?? null;
-        if ($symbol !== null) {
-            if (Str::contains($symbol, '/') !== false) {
-                $symbol = trim(explode('/', $symbol)[0]);
-            }
+        } else {
+            $stopLoss = self::NOT_FOUND_PLACEHOLDER;
         }
 
         $setOrderData = [
             'channelId' => $this->data['channelId'],
-            'symbol' => $symbol,
+            'symbol' => $match[1] ?? null,
             'direction' => $direction,
             'entry' => $entry,
             'leverage' => $leverage,
