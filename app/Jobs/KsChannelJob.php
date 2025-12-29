@@ -4,67 +4,50 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Enums\Cache\CacheKeysEnum;
 use App\Patterns\Adapters\Exchange\AbstractExchangeApi;
 use App\Patterns\Factories\ExchangeFactory;
+use App\Services\AbstractCacheService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
- * Обработка данных из канала Skr
+ * Обработка данных из канала Ks
  */
-class SkrChannelJob extends AbstractChannelJob
+class KsChannelJob extends AbstractChannelJob
 {
     /**
-     * Выбираем нужные данные
+     * Получение информации из пришедшего и закешированного сообщений
      */
-    private function parseSignal(string $text): array
+    private function parseSignal(string $message, string $cachedMessage): array
     {
-        $parsed = [
+        $result = [
             'coin' => null,
             'direction' => null,
-            'marketEntry' => null,
-            'limitEntry' => null,
+            'leverage' => 10,
+            'entry' => [],
+            'targets' => self::NOT_FOUND_PLACEHOLDER,
             'stopLoss' => null,
-            'targets' => [],
-            'leverage' => null,
         ];
 
-        // Direction + coin + leverage
-        if (preg_match('/(\S+)\s+📈\s+(LONG|SHORT)[\s\x{00A0}]+x?(\d+(?:-\d+)?)x?/iu', $text, $m)) {
-            $parsed['coin'] = $m[1] ?? null;
-            $parsed['direction'] = $m[2] ?? null;
-            $leverage = $m[3] ?? null;
-            if ($leverage === null) {
-                $leverage = 10;
-            } else {
-                if (Str::contains($leverage, '-')) {
-                    $leverages = explode('-', $leverage);
-                    $leverage = collect($leverages)->avg();
-                }
+        if (preg_match('/(\w+)\s*-\s*(\w+)/i', $cachedMessage, $match)) {
+            $result['coin'] = $match[1] ?? null;
+            $result['direction'] = $match[2] ?? null;
+        }
+
+        if (preg_match('/твх\s*(\d\.\d{2,})/i', $message, $match)) {
+            $result['entry'] = $match[1] ?? null;
+            if ($result['entry'] !== null) {
+                $result['entry'] = [$result['entry']];
             }
-            $parsed['leverage'] = (int) $leverage;
         }
 
-        // marketEntry
-        if (preg_match('/рынок[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
-            $parsed['marketEntry'] = $m[1] ?? null;
-        }
-        // limitEntry
-        if (preg_match('/лимит[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
-            $parsed['limitEntry'] = $m[1] ?? null;
+        if (preg_match('/стоп\s*(\d\.\d{2,})/i', $message, $match)) {
+            $result['stopLoss'] = $match[1] ?? null;
         }
 
-        // STOP LOSS
-        if (preg_match('/stop[\s\-]?loss\s*:\s*([\d.]+)/iu', $text, $m)) {
-            $parsed['stopLoss'] = $m[1] ?? null;
-        }
-
-        // Targets (TP1, TP2, TP3…)
-        if (preg_match_all('/\d+\)\s*([\d.]+)/u', $text, $m)) {
-            $parsed['targets'] = $m[1] ?? [];
-        }
-
-        return $parsed;
+        return $result;
     }
 
     public function handle(): void
@@ -76,13 +59,40 @@ class SkrChannelJob extends AbstractChannelJob
         }
         $message = $this->data['data']['message']['message'];
 
+        if (!isset($this->data['data']['message']['id'])) {
+            Log::channel('skippedMessagesFromJob')
+                ->error('Message ID not found', ['cameData' => $this->data]);
+            return;
+        }
+        $messageCacheKey = CacheKeysEnum::KsChannelMessages
+            ->getKeyForKsMessage((string) $this->data['data']['message']['id']);
+        Cache::put($messageCacheKey, $message, AbstractCacheService::HALF_OF_HOUR_CACHE_TTL);
+
         if (!$this->checkIfItNecessaryMessage($message)) {
             // если в сообщении ничего интересного, игнорируем
             return;
         }
 
-        // парсим сообщение и получаем необходимые данные
-        $parseResult = $this->parseSignal($message);
+        // пытаемся найти сообщение, в ответ на которое пришло это
+        if (!isset($this->data['data']['message']['reply_to']['reply_to_msg_id'])) {
+            Log::channel('skippedMessagesFromJob')
+                ->error('Message reply_to_msg_id not found', ['cameData' => $this->data]);
+            return;
+        }
+        $messageCacheKey = CacheKeysEnum::KsChannelMessages
+            ->getKeyForKsMessage((string) $this->data['data']['message']['reply_to']['reply_to_msg_id']);
+        $cachedMessage = Cache::get($messageCacheKey);
+        if ($cachedMessage === null) {
+            Log::channel('skippedMessagesFromJob')
+                ->error(
+                    'Message with id = '
+                    . $this->data['data']['message']['reply_to']['reply_to_msg_id']
+                    . ' not found in Cache',
+                    ['cameData' => $this->data],
+                );
+            return;
+        }
+        Cache::forget($messageCacheKey);
 
         // наименование биржи, по этому ключу фабрика сформирует нужный API объект
         $exchangeName = $this->getDefaultExchange();
@@ -96,52 +106,26 @@ class SkrChannelJob extends AbstractChannelJob
             return;
         }
 
-        $direction = $parseResult['direction'] ?? null;
+        // парсим сообщение и получаем необходимые данные
+        $resultOfParse = $this->parseSignal($message, $cachedMessage);
+        $direction = $resultOfParse['direction'];
         if ($direction !== null) {
             $direction = trim(Str::lower($direction));
             $direction = $direction === 'long' ? AbstractExchangeApi::LONG_DIRECTION : AbstractExchangeApi::SHORT_DIRECTION;
         }
 
-        $leverage = empty($parseResult['leverage']) ? 10 : (int) $parseResult['leverage'];
-
-        $targets = null;
-        if (! empty($parseResult['targets'])) {
-            $targets = $parseResult['targets'];
-            if (is_array($targets)) {
-                foreach ($targets as &$target) {
-                    $target = (float) str_replace(',', '.', (string) $target);
-                }
-                unset($target);
-            } else {
-                $targets = (float) str_replace(',', '.', (string) $targets);
-            }
-        }
-
-        $stopLoss = $parseResult['stopLoss'] ?? null;
+        $stopLoss = $resultOfParse['stopLoss'];
         if ($stopLoss !== null) {
             $stopLoss = (float) str_replace(',', '.', (string) $stopLoss);
-        } else {
-            $stopLoss = self::NOT_FOUND_PLACEHOLDER;
-        }
-
-        $entry = [];
-        if ($parseResult['marketEntry'] !== null) {
-            $entry[] = (float) str_replace(',', '.', (string) $parseResult['marketEntry']);
-        }
-        if ($parseResult['limitEntry'] !== null) {
-            $entry[] = (float) str_replace(',', '.', (string) $parseResult['limitEntry']);
-        }
-        if ($entry === []) {
-            $entry = self::NOT_FOUND_PLACEHOLDER;
         }
 
         $setOrderData = [
             'channelId' => $this->data['channelId'],
-            'symbol' => $parseResult['coin'],
+            'symbol' => $resultOfParse['coin'],
             'direction' => $direction,
-            'entry' => $entry,
-            'leverage' => $leverage,
-            'targets' => $targets,
+            'entry' => $resultOfParse['entry'],
+            'leverage' => $resultOfParse['leverage'],
+            'targets' => $resultOfParse['targets'],
             'stopLoss' => $stopLoss,
         ];
 

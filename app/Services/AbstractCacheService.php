@@ -14,6 +14,8 @@ abstract class AbstractCacheService
 
     public const int TWO_SECONDS_CACHE_TTL = 2;
 
+    public const int TREE_MINUTES_CACHE_TTL = 180;
+
     public const int ONE_HOUR_CACHE_TTL = 3600;
 
     public const int HALF_OF_HOUR_CACHE_TTL = 1800;

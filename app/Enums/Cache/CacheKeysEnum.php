@@ -18,7 +18,17 @@ enum CacheKeysEnum: string
     /** Текущая цена пары на бирже */
     case CurrentPriceForSymbolInExchange = '%s.%s.price';
 
+    /** Текущий баланс на бирже */
     case CurrentBalanceForExchange = '%s.balance';
+
+    /** Т.к. в канале Ks сообщения приходят в ответ на предыдущее, то храним все сообщения в виде id => message */
+    case KsChannelMessages = 'ks.messages.%s';
+
+    /** Пара, для которой установлено плечо*/
+    case PairWithLeverageInExchange = '%s.%s.l';
+
+    /** Пара, для которой установлен стоп лосс */
+    case PairWithSlInExchange = '%s.%s.sl';
 
     public function getKeyForSymbolLimits(string $exchange, string $symbol): string
     {
@@ -33,5 +43,20 @@ enum CacheKeysEnum: string
     public function getKeyForBalance(string $exchange): string
     {
         return sprintf($this->value, $exchange);
+    }
+
+    public function getKeyForKsMessage(string $messageId): string
+    {
+        return sprintf($this->value, $messageId);
+    }
+
+    public function getKeyForLeverageOfPair(string $exchange, string $symbol): string
+    {
+        return sprintf($this->value, $exchange, $symbol);
+    }
+
+    public function getKeyForSlOfPair(string $exchange, string $symbol): string
+    {
+        return sprintf($this->value, $exchange, $symbol);
     }
 }

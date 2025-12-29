@@ -10,61 +10,69 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
- * Обработка данных из канала Skr
+ * Обработка данных из канала Etg
  */
-class SkrChannelJob extends AbstractChannelJob
+class EtgChannelJob extends AbstractChannelJob
 {
     /**
-     * Выбираем нужные данные
+     * Получение информации из пришедшего сообщения
      */
     private function parseSignal(string $text): array
     {
-        $parsed = [
+        $result = [
             'coin' => null,
             'direction' => null,
-            'marketEntry' => null,
-            'limitEntry' => null,
-            'stopLoss' => null,
-            'targets' => [],
             'leverage' => null,
+            'entry' => [],
+            'targets' => [],
+            'stopLoss' => null,
         ];
 
-        // Direction + coin + leverage
-        if (preg_match('/(\S+)\s+📈\s+(LONG|SHORT)[\s\x{00A0}]+x?(\d+(?:-\d+)?)x?/iu', $text, $m)) {
-            $parsed['coin'] = $m[1] ?? null;
-            $parsed['direction'] = $m[2] ?? null;
-            $leverage = $m[3] ?? null;
-            if ($leverage === null) {
-                $leverage = 10;
-            } else {
-                if (Str::contains($leverage, '-')) {
-                    $leverages = explode('-', $leverage);
-                    $leverage = collect($leverages)->avg();
-                }
+        // direction, coin, leverage
+        if (preg_match(
+            '/\b(long|short)\b.*?\$([A-Z0-9]+).*?\(max\s*(\d+)x\)/iu',
+            $text,
+            $m
+        )) {
+            $result['direction'] = strtoupper($m[1] ?? null);
+            $result['coin'] = $m[2] ?? null;
+            $result['leverage'] = $m[3] ?? null;
+        }
+
+        // entry
+        if (preg_match(
+            '/entry\s*:\s*([\d.]+)\s*-\s*([\d.]+)/i',
+            $text,
+            $m
+        )) {
+            $result['entry'] = [
+                $m[1] ?? null,
+                $m[2] ?? null,
+            ];
+        }
+
+        // targets
+        if (preg_match(
+            '/tp\s*:\s*([^\n]+)/i',
+            $text,
+            $m
+        )) {
+            if (!empty($m[1])) {
+                preg_match_all('/[\d.]+/', $m[1], $nums);
+                $result['targets'] = $nums[0];
             }
-            $parsed['leverage'] = (int) $leverage;
         }
 
-        // marketEntry
-        if (preg_match('/рынок[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
-            $parsed['marketEntry'] = $m[1] ?? null;
-        }
-        // limitEntry
-        if (preg_match('/лимит[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
-            $parsed['limitEntry'] = $m[1] ?? null;
-        }
-
-        // STOP LOSS
-        if (preg_match('/stop[\s\-]?loss\s*:\s*([\d.]+)/iu', $text, $m)) {
-            $parsed['stopLoss'] = $m[1] ?? null;
+        // stop loss
+        if (preg_match(
+            '/\bsl\s*:\s*([\d.]+)/i',
+            $text,
+            $m
+        )) {
+            $result['stopLoss'] = $m[1] ?? null;
         }
 
-        // Targets (TP1, TP2, TP3…)
-        if (preg_match_all('/\d+\)\s*([\d.]+)/u', $text, $m)) {
-            $parsed['targets'] = $m[1] ?? [];
-        }
-
-        return $parsed;
+        return $result;
     }
 
     public function handle(): void
@@ -124,22 +132,11 @@ class SkrChannelJob extends AbstractChannelJob
             $stopLoss = self::NOT_FOUND_PLACEHOLDER;
         }
 
-        $entry = [];
-        if ($parseResult['marketEntry'] !== null) {
-            $entry[] = (float) str_replace(',', '.', (string) $parseResult['marketEntry']);
-        }
-        if ($parseResult['limitEntry'] !== null) {
-            $entry[] = (float) str_replace(',', '.', (string) $parseResult['limitEntry']);
-        }
-        if ($entry === []) {
-            $entry = self::NOT_FOUND_PLACEHOLDER;
-        }
-
         $setOrderData = [
             'channelId' => $this->data['channelId'],
-            'symbol' => $parseResult['coin'],
+            'symbol' => $parseResult['coin'] ?? null,
             'direction' => $direction,
-            'entry' => $entry,
+            'entry' => $parseResult['entry'] ?? self::NOT_FOUND_PLACEHOLDER,
             'leverage' => $leverage,
             'targets' => $targets,
             'stopLoss' => $stopLoss,

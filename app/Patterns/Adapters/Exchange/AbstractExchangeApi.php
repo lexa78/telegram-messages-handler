@@ -31,9 +31,6 @@ abstract class AbstractExchangeApi
 
     protected const string EXCHANGE_NAME  = '';
 
-    // todo потом эту константу надо будет вынести в админку, чтобы там можно было менять этот процент
-    protected const float RISK_PERCENT_FOR_LOST = 0.03;
-
     protected const float MIN_MONEY_IN_ORDER = 0.0;
 
     protected const string MARKET_LINEAR_CATEGORY = 'linear';
@@ -393,6 +390,32 @@ abstract class AbstractExchangeApi
         }
 
         return [$targets, $weights];
+    }
+
+    /**
+     * Получает 15% от цены для простановки TP
+     */
+    protected function getPercentFromEntryPriceForTP(string $direction, float $entry): float
+    {
+        $fifteenPercent = $entry * RiskManager::PERCENT_FOR_UNDEFINED_TAKE_PROFIT;
+        if ($direction === self::LONG_DIRECTION) {
+            return $entry + $fifteenPercent;
+        }
+
+        return $entry - $fifteenPercent;
+    }
+
+    /**
+     * Получает 5% от цены для простановки SL
+     */
+    protected function getPercentFromEntryPriceForSL(string $direction, float $entry): float
+    {
+        $fivePercent = $entry * RiskManager::PERCENT_FOR_UNDEFINED_STOP_LOSS;
+        if ($direction === self::LONG_DIRECTION) {
+            return $entry - $fivePercent;
+        }
+
+        return $entry + $fivePercent;
     }
 
     // применение middleware RateLimited, чтобы не было слишком частых запросов в биржу, чтобы не забанили

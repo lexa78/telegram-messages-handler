@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Patterns\Adapters\Exchange;
 
+use App\Enums\Cache\CacheKeysEnum;
 use App\Enums\Trading\OrderDirectionsEnum;
 use App\Enums\Trading\OrderStatusesEnum;
 use App\Enums\Trading\OrderTypesEnum;
@@ -12,8 +13,10 @@ use App\Enums\Trading\TypesOfTriggerWorkEnum;
 use App\Jobs\AbstractChannelJob;
 use App\Repositories\Trading\OrderRepository;
 use App\Repositories\Trading\OrderTargetRepository;
+use App\Services\AbstractCacheService;
 use App\Services\Trading\RiskManager;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -69,7 +72,7 @@ class BybitApiJob extends AbstractExchangeApi
         }
 
         // Сколько денег хотим использовать (3% от баланса) или минимальную сумму по требованиям биржи
-        $balanceToUse = $riskManager->balanceToUseFromPercent($accountBalance, self::RISK_PERCENT_FOR_LOST);
+        $balanceToUse = $riskManager->balanceToUseFromPercent($accountBalance, RiskManager::RISK_PERCENT_FOR_LOST);
         if ($balanceToUse < self::MIN_MONEY_IN_ORDER) {
             $balanceToUse = self::MIN_MONEY_IN_ORDER;
         }
@@ -103,9 +106,15 @@ class BybitApiJob extends AbstractExchangeApi
             return;
         }
 
-        // ставим плечо для пришедшей пары
-        $url = $this->apiUrlBeginning.'/v5/position/set-leverage';
-        $this->placeLeverage($url, $symbol);
+        $cacheKey = CacheKeysEnum::PairWithLeverageInExchange
+            ->getKeyForLeverageOfPair(self::EXCHANGE_NAME, $symbol);
+        $isIssetLeverage = Cache::get($cacheKey, false);
+        if ($isIssetLeverage === false) {
+            // ставим плечо для пришедшей пары
+            $url = $this->apiUrlBeginning.'/v5/position/set-leverage';
+            $this->placeLeverage($url, $symbol);
+            Cache::put($cacheKey, true, AbstractCacheService::TREE_MINUTES_CACHE_TTL);
+        }
 
         // ставим Order
         $url = $this->apiUrlBeginning.'/v5/order/create';
@@ -152,28 +161,38 @@ class BybitApiJob extends AbstractExchangeApi
             'updated_at' => $now,
         ];
 
-        // ставим stopLoss
-        // todo сначала надо проверить, что sl еще не проставлен GET /v5/position/list
-        $url = $this->apiUrlBeginning.'/v5/position/trading-stop';
-        $body = [
-            'category' => self::MARKET_LINEAR_CATEGORY,
-            'symbol' => $symbol,
-            'tpslMode' => self::FULL_CLOSE_LIMIT_MODE,
-            'positionIdx' => 0,
-            'stopLoss' => (string) $this->orderData['stopLoss'],
-            'slTriggerBy' => self::PRICE_TYPE_FOR_SL_TRIGGER_WORK,
-        ];
-        $response = $this->placeStopLoss($url, $body);
-        $now = Carbon::createFromTimestamp($response['time']);
-        $stopLossDataToSave = [
-            'exchange_tp_id' => 'SL',
-            'type' => TriggerTypesEnum::SL->value,
-            'price' => $this->orderData['stopLoss'],
-            'qty' => $qty,
-            'trigger_by' => TypesOfTriggerWorkEnum::MarkPrice->value,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ];
+        $cacheKey = CacheKeysEnum::PairWithSlInExchange
+            ->getKeyForSlOfPair(self::EXCHANGE_NAME, $symbol);
+        $isIssetSl = Cache::get($cacheKey, false);
+        if ($isIssetSl === false) {
+            // Канал Cvc не дает TP и SL. Потому буду брать SL как 5% от цены
+            if ($this->orderData['stopLoss'] === AbstractChannelJob::NOT_FOUND_PLACEHOLDER) {
+                $this->orderData['stopLoss'] = $this
+                    ->getPercentFromEntryPriceForSL($this->orderData['direction'], $this->orderData['entry']);
+            }
+            // ставим stopLoss
+            $url = $this->apiUrlBeginning.'/v5/position/trading-stop';
+            $body = [
+                'category' => self::MARKET_LINEAR_CATEGORY,
+                'symbol' => $symbol,
+                'tpslMode' => self::FULL_CLOSE_LIMIT_MODE,
+                'positionIdx' => 0,
+                'stopLoss' => (string) $this->orderData['stopLoss'],
+                'slTriggerBy' => self::PRICE_TYPE_FOR_SL_TRIGGER_WORK,
+            ];
+            $response = $this->placeStopLoss($url, $body);
+            $now = Carbon::createFromTimestamp($response['time']);
+            $stopLossDataToSave = [
+                'exchange_tp_id' => 'SL',
+                'type' => TriggerTypesEnum::SL->value,
+                'price' => $this->orderData['stopLoss'],
+                'qty' => $qty,
+                'trigger_by' => TypesOfTriggerWorkEnum::MarkPrice->value,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+            Cache::put($cacheKey, true, AbstractCacheService::TREE_MINUTES_CACHE_TTL);
+        }
 
         // ставим takeProfit(ы)
         $url = $this->apiUrlBeginning.'/v5/order/create';
@@ -184,6 +203,17 @@ class BybitApiJob extends AbstractExchangeApi
             'orderType' => self::LIMIT_ORDER_TYPE,
             'reduceOnly' => true,
         ];
+
+        // Канал Ks рисует таргеты на картинках, по-этому пока буду брать 15% от точки входа
+        if (
+            count($this->orderData['targets']) === 1 &&
+            head($this->orderData['targets']) === AbstractChannelJob::NOT_FOUND_PLACEHOLDER
+        ) {
+            $this->orderData['targets'] = [
+                $this->getPercentFromEntryPriceForTP($this->orderData['direction'], $this->orderData['entry'])
+            ];
+        }
+
         $weights = $riskManager->splitTargetsQty($qty, count($this->orderData['targets']), $qtyStep);
         [$this->orderData['targets'], $weights] =
             $this->rebuildTargetsIfWeightsEmpty($this->orderData['targets'], $weights, $qty);

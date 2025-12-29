@@ -13,6 +13,15 @@ final class RiskManager
 {
     private const int DEFAULT_DECIMALS_FOR_QTY = 8;
 
+    // todo потом эту константу надо будет вынести в админку, чтобы там можно было менять этот процент
+    public const float RISK_PERCENT_FOR_LOST = 0.03;
+
+    // todo потом эту константу надо будет вынести в админку, чтобы там можно было менять этот процент
+    public const float PERCENT_FOR_UNDEFINED_TAKE_PROFIT = 0.15;
+
+    // todo потом эту константу надо будет вынести в админку, чтобы там можно было менять этот процент
+    public const float PERCENT_FOR_UNDEFINED_STOP_LOSS = 0.05;
+
     /**
      * Рассчитать сумму (USDT) для использования в сделке по проценту депозита.
      *

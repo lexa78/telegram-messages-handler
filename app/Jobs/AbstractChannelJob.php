@@ -22,6 +22,7 @@ class AbstractChannelJob implements ShouldQueue
      */
     private const array NECESSARY_WORDS_IN_MESSAGE = [
         'тейк',
+        'твх',
         'take',
         'профит',
         'profit',

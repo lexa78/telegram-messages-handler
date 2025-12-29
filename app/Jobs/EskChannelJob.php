@@ -10,9 +10,9 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 /**
- * Обработка данных из канала Skr
+ * Обработка данных из канала Esk
  */
-class SkrChannelJob extends AbstractChannelJob
+class EskChannelJob extends AbstractChannelJob
 {
     /**
      * Выбираем нужные данные
@@ -22,46 +22,48 @@ class SkrChannelJob extends AbstractChannelJob
         $parsed = [
             'coin' => null,
             'direction' => null,
-            'marketEntry' => null,
-            'limitEntry' => null,
+            'entry' => null,
             'stopLoss' => null,
             'targets' => [],
             'leverage' => null,
         ];
 
         // Direction + coin + leverage
-        if (preg_match('/(\S+)\s+📈\s+(LONG|SHORT)[\s\x{00A0}]+x?(\d+(?:-\d+)?)x?/iu', $text, $m)) {
+        if (preg_match(
+            '/#([A-Z0-9]+)\s+(LONG|SHORT)\s+X(\d+(?:-(\d+))?)/i',
+            $text,
+            $m
+        )) {
             $parsed['coin'] = $m[1] ?? null;
-            $parsed['direction'] = $m[2] ?? null;
-            $leverage = $m[3] ?? null;
-            if ($leverage === null) {
-                $leverage = 10;
+            $parsed['direction'] = strtoupper($m[2] ?? '');
+            if (isset($m[4]) && Str::contains($m[3], '-')) {
+                $parsed['leverage'] = (int) collect(explode('-', $m[3]))->avg();
             } else {
-                if (Str::contains($leverage, '-')) {
-                    $leverages = explode('-', $leverage);
-                    $leverage = collect($leverages)->avg();
-                }
+                $parsed['leverage'] = $m[3] ?? null;
             }
-            $parsed['leverage'] = (int) $leverage;
-        }
-
-        // marketEntry
-        if (preg_match('/рынок[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
-            $parsed['marketEntry'] = $m[1] ?? null;
-        }
-        // limitEntry
-        if (preg_match('/лимит[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
-            $parsed['limitEntry'] = $m[1] ?? null;
         }
 
         // STOP LOSS
-        if (preg_match('/stop[\s\-]?loss\s*:\s*([\d.]+)/iu', $text, $m)) {
-            $parsed['stopLoss'] = $m[1] ?? null;
+        if (preg_match(
+            '/(?:стоп|sl|stop)[^0-9]{0,30}(\d+[.,]?\d*)/iu',
+            $text,
+            $m
+        )) {
+            $parsed['stopLoss'] = isset($m[1])
+                ? str_replace(',', '.', $m[1])
+                : self::NOT_FOUND_PLACEHOLDER;
         }
-
         // Targets (TP1, TP2, TP3…)
-        if (preg_match_all('/\d+\)\s*([\d.]+)/u', $text, $m)) {
-            $parsed['targets'] = $m[1] ?? [];
+        if (preg_match(
+            '/(?:тейк|tp|target)[^0-9]{0,30}((?:\d+[.,]?\d*)(?:\s*(?:\/|и)\s*(?:\d+[.,]?\d*))*)/iu',
+            $text,
+            $m
+        )) {
+            if (!empty($m[1])) {
+                $targetsRaw = str_replace(',', '.', $m[1]);
+                $targets = preg_split('/\s*(?:\/|и)\s*/u', $targetsRaw);
+                $parsed['targets'] = array_values(array_filter($targets, fn($v) => is_numeric($v)));
+            }
         }
 
         return $parsed;
@@ -124,22 +126,11 @@ class SkrChannelJob extends AbstractChannelJob
             $stopLoss = self::NOT_FOUND_PLACEHOLDER;
         }
 
-        $entry = [];
-        if ($parseResult['marketEntry'] !== null) {
-            $entry[] = (float) str_replace(',', '.', (string) $parseResult['marketEntry']);
-        }
-        if ($parseResult['limitEntry'] !== null) {
-            $entry[] = (float) str_replace(',', '.', (string) $parseResult['limitEntry']);
-        }
-        if ($entry === []) {
-            $entry = self::NOT_FOUND_PLACEHOLDER;
-        }
-
         $setOrderData = [
             'channelId' => $this->data['channelId'],
             'symbol' => $parseResult['coin'],
             'direction' => $direction,
-            'entry' => $entry,
+            'entry' => self::NOT_FOUND_PLACEHOLDER,
             'leverage' => $leverage,
             'targets' => $targets,
             'stopLoss' => $stopLoss,
