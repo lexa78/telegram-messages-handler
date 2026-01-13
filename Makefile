@@ -34,4 +34,4 @@ showQueuesInfo:
 
 putMessageToQueue:
 # Положить сообщение в очередь telegram.raw Нужно заменить json на нужный
-	docker exec -it rabbitmq rabbitmqadmin publish exchange=amq.default routing_key=telegram.raw payload='{"data":{"message":{"message":"\ud83d\udfe2 LONG  - $ORDI - RISK ORDER - SMALL VOL\n-  Entry: 4.583\n- Entry limit: 4.475\n- SL: 4.384\n\u26a0\ufe0f\n Disclaimer\nThis is not financial advice. Trade at your own risk."}},"channelId":"-1001573488012"}'
+	docker exec -it rabbitmq rabbitmqadmin publish exchange=amq.default routing_key=telegram.raw payload='{"data":{"message":{"message":"\n🔴 SHORT - $LTC\n\n- Entry 1: 81.44\n- Entry 2: 82.84\n- SL: 81.99\n\n🎯 TP1: 81.01\n🎯 TP2: 80.57\n\n⚠️ Disclaimer\nThis is not financial advice. Trade at your own risk."}},"channelId":"-1001573488012"}'

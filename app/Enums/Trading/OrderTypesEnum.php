@@ -12,4 +12,12 @@ enum OrderTypesEnum: int
     case Market = 1;
 
     case Limit = 2;
+
+    public function label(): string
+    {
+        return match ($this->value) {
+            1 => 'Market',
+            2 => 'Limit',
+        };
+    }
 }

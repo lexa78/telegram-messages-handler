@@ -46,21 +46,21 @@ class SkrChannelJob extends AbstractChannelJob
         }
 
         // marketEntry
-        if (preg_match('/рынок[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
+        if (preg_match('/рынок[\s\x{00A0}]+([\d,.]+)/iu', $text, $m)) {
             $parsed['marketEntry'] = $m[1] ?? null;
         }
         // limitEntry
-        if (preg_match('/лимит[\s\x{00A0}]+([\d.]+)/iu', $text, $m)) {
+        if (preg_match('/лимит[\s\x{00A0}]+([\d,.]+)/iu', $text, $m)) {
             $parsed['limitEntry'] = $m[1] ?? null;
         }
 
         // STOP LOSS
-        if (preg_match('/stop[\s\-]?loss\s*:\s*([\d.]+)/iu', $text, $m)) {
+        if (preg_match('/stop[\s\-]?loss\s*:\s*([\d,.]+)/iu', $text, $m)) {
             $parsed['stopLoss'] = $m[1] ?? null;
         }
 
         // Targets (TP1, TP2, TP3…)
-        if (preg_match_all('/\d+\)\s*([\d.]+)/u', $text, $m)) {
+        if (preg_match_all('/\d+\)\s*([\d,.]+)/u', $text, $m)) {
             $parsed['targets'] = $m[1] ?? [];
         }
 

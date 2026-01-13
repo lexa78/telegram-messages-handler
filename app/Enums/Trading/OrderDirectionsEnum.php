@@ -12,4 +12,12 @@ enum OrderDirectionsEnum: int
     case Buy = 1;
 
     case Sell = 2;
+
+    public function label(): string
+    {
+        return match ($this->value) {
+            1 => 'Buy',
+            2 => 'Sell',
+        };
+    }
 }

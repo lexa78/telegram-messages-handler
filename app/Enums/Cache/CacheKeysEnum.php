@@ -30,6 +30,12 @@ enum CacheKeysEnum: string
     /** Пара, для которой установлен стоп лосс */
     case PairWithSlInExchange = '%s.%s.sl';
 
+    /** Монеты, которые торгуются на бирже и их данные */
+    case ContractsInExchange = '%s.contracts';
+
+    /** Информация об открытой позиции */
+    case PositionInfo = '%s.%s.position';
+
     public function getKeyForSymbolLimits(string $exchange, string $symbol): string
     {
         return sprintf($this->value, $exchange, $symbol);
@@ -56,6 +62,16 @@ enum CacheKeysEnum: string
     }
 
     public function getKeyForSlOfPair(string $exchange, string $symbol): string
+    {
+        return sprintf($this->value, $exchange, $symbol);
+    }
+
+    public function getKeyForContracts(string $exchange): string
+    {
+        return sprintf($this->value, $exchange);
+    }
+
+    public function getKeyForPositionInfo(string $exchange, string $symbol): string
     {
         return sprintf($this->value, $exchange, $symbol);
     }

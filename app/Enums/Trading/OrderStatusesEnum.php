@@ -16,4 +16,14 @@ enum OrderStatusesEnum: int
     case Closed = 3;
 
     case Cancelled = 4;
+
+    public function label(): string
+    {
+        return match ($this->value) {
+            1 => 'Open',
+            2 => 'PartiallyClosed',
+            3 => 'Closed',
+            4 => 'Cancelled',
+        };
+    }
 }

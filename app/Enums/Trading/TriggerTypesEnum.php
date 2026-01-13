@@ -14,4 +14,14 @@ enum TriggerTypesEnum: int
     case Manual = 2;
 
     case SL = 3;
+
+    public function label(): string
+    {
+        return match ($this->value) {
+            1 => 'TP',
+            2 => 'Manual',
+            3 => 'SL',
+        };
+    }
+
 }

@@ -13,6 +13,9 @@ final class RiskManager
 {
     private const int DEFAULT_DECIMALS_FOR_QTY = 8;
 
+    // Ограничение Gate между ценой открытия и ценой TP
+    public const float RISK_PERCENT_OF_GATE_API_TO_SET_TP = 1.8;
+
     // todo потом эту константу надо будет вынести в админку, чтобы там можно было менять этот процент
     public const float RISK_PERCENT_FOR_LOST = 0.03;
 
@@ -68,7 +71,11 @@ final class RiskManager
         }
 
         // Количество базового актива
-        return $riskMoney / $slDistance;
+        $rawQty = $riskMoney / $slDistance;
+        if ($rawQty > 0.0 && $rawQty < 1.0) {
+            $rawQty = 1.0;
+        }
+        return $rawQty;
     }
 
     /**
@@ -92,7 +99,7 @@ final class RiskManager
     }
 
     /**
-     * Учитывая пределы Bybit, привести qty к минимальным требованиям:
+     * Учитывая пределы биржи, привести qty к минимальным требованиям:
      * - убедиться qty >= minQty
      * - убедиться qty * entryPrice >= minOrderValue (если задано)
      * Возвращает скорректированный qty или 0 если не получится.

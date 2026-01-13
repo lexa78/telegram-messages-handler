@@ -9,4 +9,5 @@ return [
     'raw' => 'telegram.raw',
     'processed' => 'laravel.jobs',
     'exchange' => 'exchange.orders',
+    'gateWebsocket' => 'gate',
 ];

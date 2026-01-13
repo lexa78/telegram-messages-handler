@@ -4,11 +4,8 @@ declare(strict_types=1);
 
 namespace App\Patterns\Adapters\Exchange;
 
-use App\Enums\Cache\CacheKeysEnum;
 use App\Exceptions\Exchanges\AbstractExchangeException;
 use App\Exceptions\Exchanges\Traiding\GetCurrentBalanceException;
-use App\Exceptions\Exchanges\Traiding\GetLotSizeFilterFromExchangeResponseException;
-use App\Exceptions\Exchanges\Traiding\GetPriceFromExchangeResponseException;
 use App\Exceptions\Exchanges\Traiding\GetSymbolLimitsException;
 use App\Exceptions\Exchanges\Traiding\GetTickerException;
 use App\Exceptions\Exchanges\Traiding\SetLeverageException;
@@ -16,10 +13,8 @@ use App\Exceptions\Exchanges\Traiding\SetOrderOrTpException;
 use App\Exceptions\Exchanges\Traiding\SetStopLossException;
 use App\Repositories\Trading\OrderRepository;
 use App\Repositories\Trading\OrderTargetRepository;
-use App\Services\AbstractCacheService;
 use App\Services\Trading\RiskManager;
 use Illuminate\Queue\Middleware\RateLimited;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -27,9 +22,9 @@ use Throwable;
 
 abstract class AbstractExchangeApi
 {
-    private const int RECV_WINDOW = 5000;
+    protected const int RECV_WINDOW = 5000;
 
-    protected const string EXCHANGE_NAME  = '';
+    protected const string EXCHANGE_NAME = '';
 
     protected const float MIN_MONEY_IN_ORDER = 0.0;
 
@@ -50,6 +45,10 @@ abstract class AbstractExchangeApi
         self::SHORT_DIRECTION => self::LONG_DIRECTION,
     ];
 
+    protected const string GET_METHOD = 'GET';
+
+    protected const string POST_METHOD = 'POST';
+
     public const string LONG_DIRECTION = 'Buy';
 
     public const string SHORT_DIRECTION = 'Sell';
@@ -60,12 +59,16 @@ abstract class AbstractExchangeApi
 
     protected string $apiUrlBeginning;
 
-    public function __construct(protected array $orderData) {
+    protected ?string $apiVersion;
+
+    public function __construct(protected array $orderData)
+    {
         $exchangeName = config('exchanges.default_exchange');
-        $apiKeys = config('exchanges.api_keys.' . $exchangeName);
+        $apiKeys = config('exchanges.api_keys.'.$exchangeName);
         $this->apiKey = $apiKeys['api_key'];
         $this->apiSecret = $apiKeys['api_secret'];
         $this->apiUrlBeginning = $apiKeys['api_url'];
+        $this->apiVersion = $apiKeys['api_version'];
     }
 
     abstract public function handle(
@@ -75,92 +78,82 @@ abstract class AbstractExchangeApi
     ): void;
 
     /**
-     * Формирует заголовки для подписания GET запросов
+     * Получение цены из ответа от биржи
      */
-    private function createSignatureForHeaders(array $params = [], bool $isGet = false): array
+    abstract protected function getPriceFromResponse(array $response, string $cacheKey): float;
+
+    /**
+     * Получение лимитов из ответа от биржи
+     */
+    protected function getLimitsFromResponse(array $response, string $cacheKey): float
     {
-        if ($isGet === true) {
-            $queryStringOrBody = http_build_query($params);
-        } else {
-            $queryStringOrBody = json_encode($params, JSON_UNESCAPED_SLASHES);;
+        return 0.0;
+    }
+
+    /**
+     * Получение баланса из ответа от биржи
+     */
+    abstract protected function getBalanceFromResponse(array $response, string $cacheKey): float;
+
+    // если в сообщении не был найден stopLoss, то берем PERCENT_FOR_UNDEFINED_STOP_LOSS% от цены
+    protected function getDefaultStopLossPercent(float $entry, string $direction, float $priceStep): float
+    {
+        if ($direction === AbstractExchangeApi::LONG_DIRECTION) {
+            $rawSl = $entry - ($entry * RiskManager::PERCENT_FOR_UNDEFINED_STOP_LOSS);
+
+            return floor($rawSl / $priceStep) * $priceStep;
         }
-        $timestamp = (int)(microtime(true) * 1000);
 
-        // строка для подписи
-        $signPayload = $timestamp . $this->apiKey . self::RECV_WINDOW . $queryStringOrBody;
+        $rawSl = $entry + ($entry * RiskManager::PERCENT_FOR_UNDEFINED_STOP_LOSS);
 
-        // подпись
-        $signature = hash_hmac('sha256', $signPayload, $this->apiSecret);
-
-        return [
-            'X-BAPI-SIGN'         => $signature,
-            'X-BAPI-API-KEY'      => $this->apiKey,
-            'X-BAPI-TIMESTAMP'    => $timestamp,
-            'X-BAPI-RECV-WINDOW'  => self::RECV_WINDOW,
-        ];
+        return ceil($rawSl / $priceStep) * $priceStep;
     }
 
     /**
      * Получение текущей информации о паре
      */
-    protected function getPrice(string $url, string $symbol): float
+    protected function sendRequestForGetPrice(string $url, array $params): array
     {
-        $cacheKey = CacheKeysEnum::CurrentPriceForSymbolInExchange
-            ->getKeyForSymbolPrice(static::EXCHANGE_NAME, $symbol);
-        return Cache::remember($cacheKey, AbstractCacheService::TWO_SECONDS_CACHE_TTL, function () use ($url, $symbol): float {
-            try {
-                $response = Http::get($url, [
-                    'category' => self::MARKET_LINEAR_CATEGORY,
-                    'symbol' => $symbol,
-                ])
-                    ->throw()
-                    ->json();
-            } catch (Throwable $e) {
-                throw new GetTickerException(
-                    message: 'Ошибка получения тикера',
-                    code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
-                    context: [
-                        'symbol' => $symbol,
-                        'url' => $url,
-                        'params' => [
-                            'category' => self::MARKET_LINEAR_CATEGORY,
-                            'symbol' => $symbol,
-                        ],
-                        'orderData' => $this->orderData,
-                        'responseBody' => $e->response?->body(),
-                        'statusCode' => $e->response?->status(),
-                    ],
-                    previous: $e,
-                );
-            }
+        try {
+            $response = Http::get($url, $params)
+                ->throw()
+                ->json();
+        } catch (Throwable $e) {
+            throw new GetTickerException(
+                message: 'Ошибка получения тикера',
+                code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
+                context: [
+                    'url' => $url,
+                    'params' => $params,
+                    'orderData' => $this->orderData,
+                    'responseBody' => $e->response?->body(),
+                    'statusCode' => $e->response?->status(),
+                ],
+                previous: $e,
+            );
+        }
 
-            $price = $response['result']['list'][0]['lastPrice'] ?? null;
-            if (empty($price)) {
-                throw new GetPriceFromExchangeResponseException(
-                    message: 'Ошибка получения цены из ответа биржи $response[\'result\'][\'list\'][0][\'lastPrice\']',
-                    code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
-                    context: [
-                        'symbol' => $symbol,
-                        'price' => $price,
-                        'orderData' => $this->orderData,
-                        'exchangeResponse' => $response,
-                    ]
-                );
-            }
-
-            return (float) $price;
-        });
+        return $response;
     }
 
     /**
      * Подготовка наименования пары для отправки по api
-     * Пример: на входе btc, на выходе BTCUSDT
+     * Пример: на входе btc, на выходе BTCUSDT если $delimiter !== null, то BTC$delimiterUSDT
      */
-    protected function prepareSymbol(string $symbol): string
+    protected function prepareSymbol(string $symbol, ?string $delimiter = null): string
     {
         $symbol = Str::upper($symbol);
         if (!Str::contains($symbol, self::SECOND_WORD_FOR_PAIR, true)) {
-            $symbol .= self::SECOND_WORD_FOR_PAIR;
+            if ($delimiter === null) {
+                $symbol .= self::SECOND_WORD_FOR_PAIR;
+            } else {
+                $symbol .= ($delimiter.self::SECOND_WORD_FOR_PAIR);
+            }
+        } else {
+            if ($delimiter !== null) {
+                $firstPartOfSymbol = explode(self::SECOND_WORD_FOR_PAIR, $symbol)[0];
+                $symbol = $firstPartOfSymbol.$delimiter.self::SECOND_WORD_FOR_PAIR;
+            }
         }
 
         return $symbol;
@@ -168,95 +161,59 @@ abstract class AbstractExchangeApi
 
     /**
      * Получение лимитов для корректной простановки ордера
-     *
-     * @return array<string, string>
      */
-    protected function getLimits(string $url, string $symbol): array
+    protected function sendRequestForGetLimits(string $url, array $params): array
     {
-        $cacheKey = CacheKeysEnum::PairLimitsForSymbolInExchange
-            ->getKeyForSymbolLimits(static::EXCHANGE_NAME, $symbol);
-        return Cache::remember($cacheKey, AbstractCacheService::ONE_HOUR_CACHE_TTL, function () use ($url, $symbol): array {
-            try {
-                $response = Http::get($url, [
-                    'category' => self::MARKET_LINEAR_CATEGORY,
-                    'symbol' => $symbol,
-                ])
-                    ->throw()
-                    ->json();
-            } catch (Throwable $e) {
-                throw new GetSymbolLimitsException(
-                    message: 'Ошибка при получении лимитов для пары',
-                    code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
-                    context: [
-                        'symbol' => $symbol,
-                        'url' => $url,
-                        'params' => [
-                            'category' => self::MARKET_LINEAR_CATEGORY,
-                            'symbol' => $symbol,
-                        ],
-                        'orderData' => $this->orderData,
-                        'responseBody' => $e->response?->body(),
-                        'statusCode' => $e->response?->status(),
-                    ],
-                    previous: $e,
-                );
-            }
+        try {
+            $response = Http::get($url, $params)
+                ->throw()
+                ->json();
+        } catch (Throwable $e) {
+            throw new GetSymbolLimitsException(
+                message: 'Ошибка при получении лимитов для пары',
+                code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
+                context: [
+                    'url' => $url,
+                    'params' => $params,
+                    'orderData' => $this->orderData,
+                    'responseBody' => $e->response?->body(),
+                    'statusCode' => $e->response?->status(),
+                ],
+                previous: $e,
+            );
+        }
 
-            $lotSizeFilter = $response['result']['list'][0]['lotSizeFilter'] ?? null;
-            if ($lotSizeFilter === null) {
-                throw new GetLotSizeFilterFromExchangeResponseException(
-                    message: 'Ошибка при получении ключа lotSizeFilter из ответа от биржи $response[\'result\'][\'list\'][0][\'lotSizeFilter\']',
-                    code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
-                    context: [
-                        'symbol' => $symbol,
-                        'orderData' => $this->orderData,
-                        'exchangeResponse' => $response,
-                    ]
-                );
-
-            }
-
-            return [
-                // Минимальное количество для ордера
-                'minQty' => $lotSizeFilter['minOrderQty'],
-                // Шаг изменения количества, чтобы отправить в ордере правильное количество
-                'qtyStep' => $lotSizeFilter['qtyStep'],
-            ];
-        });
+        return $response;
     }
 
     /**
-     * Получение лимитов для корректной простановки ордера
+     * Получение баланса на счете
      */
-    protected function getCurrentBalance(string $url): float
+    protected function getCurrentBalance(string $url, array $query, array $headers): array
     {
-        $cacheKey = CacheKeysEnum::CurrentBalanceForExchange->getKeyForBalance(static::EXCHANGE_NAME);
-        return Cache::remember($cacheKey, AbstractCacheService::HALF_OF_HOUR_CACHE_TTL, function () use ($url): float {
-            $query = [
-                'accountType' => 'UNIFIED',
-                'coin' => self::SECOND_WORD_FOR_PAIR,
-            ];
-            try {
-                $response = Http::withHeaders($this->createSignatureForHeaders($query, true))
-                    ->get($url, $query)
-                    ->throw()
-                    ->json();
-            } catch (Throwable $e) {
-                throw new GetCurrentBalanceException(
-                    message: 'Ошибка при получении текущего баланса',
-                    code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
-                    context: [
-                        'url' => $url,
-                        'params' => $query,
-                        'responseBody' => $e->response?->body(),
-                        'statusCode' => $e->response?->status(),
-                    ],
-                    previous: $e,
-                );
-            }
+        if ($query === []) {
+            $query = null;
+        }
+        try {
+            $response = Http::withHeaders($headers)
+                ->get($url, $query)
+                ->throw()
+                ->json();
+        } catch (Throwable $e) {
+            throw new GetCurrentBalanceException(
+                message: 'Ошибка при получении текущего баланса',
+                code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
+                context: [
+                    'url' => $url,
+                    'params' => $query,
+                    'responseBody' => $e->response?->body(),
+                    'statusCode' => $e->response?->status(),
+                ],
+                previous: $e,
+            );
+        }
 
-            return (float) $response['result']['list'][0]['totalAvailableBalance'];
-        });
+        return $response;
     }
 
     /**
@@ -321,7 +278,7 @@ abstract class AbstractExchangeApi
         } catch (Throwable $e) {
             $aim = isset($body['reduceOnly']) ? 'takeProfit' : 'ордера';
             throw new SetOrderOrTpException(
-                message: 'Ошибка при постановке ' . $aim,
+                message: 'Ошибка при постановке '.$aim,
                 code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
                 context: [
                     'url' => $url,
@@ -395,27 +352,35 @@ abstract class AbstractExchangeApi
     /**
      * Получает 15% от цены для простановки TP
      */
-    protected function getPercentFromEntryPriceForTP(string $direction, float $entry): float
+    protected function getPercentFromEntryPriceForTP(string $direction, float $entry, float $priceStep): float
     {
         $fifteenPercent = $entry * RiskManager::PERCENT_FOR_UNDEFINED_TAKE_PROFIT;
         if ($direction === self::LONG_DIRECTION) {
-            return $entry + $fifteenPercent;
+            $rawTp = $entry + $fifteenPercent;
+
+            return ceil($rawTp / $priceStep) * $priceStep;
         }
 
-        return $entry - $fifteenPercent;
+        $rawTp = $entry - $fifteenPercent;
+
+        return floor($rawTp / $priceStep) * $priceStep;
     }
 
     /**
      * Получает 5% от цены для простановки SL
      */
-    protected function getPercentFromEntryPriceForSL(string $direction, float $entry): float
+    protected function getPercentFromEntryPriceForSL(string $direction, float $entry, float $priceStep): float
     {
         $fivePercent = $entry * RiskManager::PERCENT_FOR_UNDEFINED_STOP_LOSS;
         if ($direction === self::LONG_DIRECTION) {
-            return $entry - $fivePercent;
+            $rawSl = $entry - $fivePercent;
+
+            return floor($rawSl / $priceStep) * $priceStep;
         }
 
-        return $entry + $fivePercent;
+        $rawSl = $entry + $fivePercent;
+
+        return ceil($rawSl / $priceStep) * $priceStep;
     }
 
     // применение middleware RateLimited, чтобы не было слишком частых запросов в биржу, чтобы не забанили

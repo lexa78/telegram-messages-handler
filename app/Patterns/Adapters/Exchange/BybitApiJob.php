@@ -10,6 +10,9 @@ use App\Enums\Trading\OrderStatusesEnum;
 use App\Enums\Trading\OrderTypesEnum;
 use App\Enums\Trading\TriggerTypesEnum;
 use App\Enums\Trading\TypesOfTriggerWorkEnum;
+use App\Exceptions\Exchanges\AbstractExchangeException;
+use App\Exceptions\Exchanges\Traiding\GetLotSizeFilterFromExchangeResponseException;
+use App\Exceptions\Exchanges\Traiding\GetPriceFromExchangeResponseException;
 use App\Jobs\AbstractChannelJob;
 use App\Repositories\Trading\OrderRepository;
 use App\Repositories\Trading\OrderTargetRepository;
@@ -27,6 +30,113 @@ class BybitApiJob extends AbstractExchangeApi
 
     protected const float MIN_MONEY_IN_ORDER = 5.0;
 
+    /**
+     * Получение цены из ответа из биржи
+     */
+    protected function getPriceFromResponse(array $response, string $cacheKey): float
+    {
+        return Cache::remember(
+            $cacheKey,
+            AbstractCacheService::TWO_SECONDS_CACHE_TTL,
+            function () use ($response, $cacheKey): float {
+                $price = $response['result']['list'][0]['lastPrice'] ?? null;
+                if (empty($price)) {
+                    throw new GetPriceFromExchangeResponseException(
+                        message: 'Ошибка получения цены из ответа биржи $response[\'result\'][\'list\'][0][\'lastPrice\']',
+                        code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
+                        context: [
+                            'cacheKey' => $cacheKey,
+                            'price' => $price,
+                            'orderData' => $this->orderData,
+                            'exchangeResponse' => $response,
+                        ]
+                    );
+                }
+
+                return (float) $price;
+            });
+    }
+
+    /**
+     * Получение лимитов из ответа от биржи
+     */
+    protected function getLimitsFromResponse(array $response, string $cacheKey): float
+    {
+        return Cache::remember($cacheKey, AbstractCacheService::ONE_HOUR_CACHE_TTL,
+            function () use ($cacheKey): array {
+                $lotSizeFilter = $response['result']['list'][0]['lotSizeFilter'] ?? null;
+                if ($lotSizeFilter === null) {
+                    throw new GetLotSizeFilterFromExchangeResponseException(
+                        message: 'Ошибка при получении ключа lotSizeFilter из ответа от биржи $response[\'result\'][\'list\'][0][\'lotSizeFilter\']',
+                        code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
+                        context: [
+                            'cacheKey' => $cacheKey,
+                            'orderData' => $this->orderData,
+                            'exchangeResponse' => $response,
+                        ]
+                    );
+
+                }
+
+                return [
+                    // Минимальное количество для ордера
+                    'minQty' => $lotSizeFilter['minOrderQty'],
+                    // Шаг изменения количества, чтобы отправить в ордере правильное количество
+                    'qtyStep' => $lotSizeFilter['qtyStep'],
+                ];
+            });
+    }
+
+    /**
+     * Получение баланса из ответа от биржи
+     */
+    protected function getBalanceFromResponse(array $response, string $cacheKey): float
+    {
+        return Cache::remember($cacheKey, AbstractCacheService::HALF_OF_HOUR_CACHE_TTL,
+            function () use ($cacheKey): float {
+                $balance = $response['result']['list'][0]['totalAvailableBalance'] ?? null;
+                if ($balance === null) {
+                    throw new GetLotSizeFilterFromExchangeResponseException(
+                        message: 'Ошибка при получении ключа баланса из ответа от биржи $response[\'result\'][\'list\'][0][\'totalAvailableBalance\']',
+                        code: AbstractExchangeException::EXCEPTION_CODE_BY_DEFAULT,
+                        context: [
+                            'cacheKey' => $cacheKey,
+                            'orderData' => $this->orderData,
+                            'exchangeResponse' => $response,
+                        ]
+                    );
+                }
+
+                return (float) $balance;
+            });
+    }
+
+    /**
+     * Формирует заголовки для подписания запросов
+     */
+    protected function createSignatureForHeaders(array $params = [], bool $isGet = false): array
+    {
+        if ($isGet === true) {
+            $queryStringOrBody = http_build_query($params);
+        } else {
+            $queryStringOrBody = json_encode($params, JSON_UNESCAPED_SLASHES);;
+        }
+        $timestamp = (int) (microtime(true) * 1000);
+
+        // строка для подписи
+        $signPayload = $timestamp.$this->apiKey.self::RECV_WINDOW.$queryStringOrBody;
+
+        // подпись
+        $signature = hash_hmac('sha256', $signPayload, $this->apiSecret);
+
+        return [
+            'X-BAPI-SIGN' => $signature,
+            'X-BAPI-API-KEY' => $this->apiKey,
+            'X-BAPI-TIMESTAMP' => $timestamp,
+            'X-BAPI-RECV-WINDOW' => self::RECV_WINDOW,
+        ];
+    }
+
     public function handle(
         RiskManager $riskManager,
         OrderRepository $orderRepository,
@@ -36,20 +146,43 @@ class BybitApiJob extends AbstractExchangeApi
         $symbol = $this->prepareSymbol($this->orderData['symbol']);
         // получаем актуальную информацию о цене
         $url = $this->apiUrlBeginning.'/v5/market/tickers';
-        $this->orderData['entry'] = $this->getPrice($url, $symbol);
-        // если в сообщении не был найден stopLoss, то берем 5% от цены
+        $cacheKey = CacheKeysEnum::CurrentPriceForSymbolInExchange
+            ->getKeyForSymbolPrice(static::EXCHANGE_NAME, $symbol);
+        $price = Cache::get($cacheKey);
+        // Если цену еще не получали или получали давно, то надо обновить и запомнить
+        if ($price === null) {
+            $priceResponse = $this->sendRequestForGetPrice(
+                $url,
+                [
+                    'category' => self::MARKET_LINEAR_CATEGORY,
+                    'symbol' => $symbol,
+                ]
+            );
+            $this->orderData['entry'] = $this->getPriceFromResponse($priceResponse, $cacheKey);
+        }
+
+        // если в сообщении не был найден stopLoss, то берем установленный % от цены
         if ($this->orderData['stopLoss'] === AbstractChannelJob::NOT_FOUND_PLACEHOLDER) {
             $entry = (float) $this->orderData['entry'];
-            if ($this->orderData['direction'] === AbstractExchangeApi::LONG_DIRECTION) {
-                $this->orderData['stopLoss'] = $entry - ($entry * 0.05);
-            } else {
-                $this->orderData['stopLoss'] = $entry + ($entry * 0.05);
-            }
+            $this->orderData['stopLoss'] = $this->getDefaultStopLossPercent($entry, $this->orderData['direction']);
         }
 
         // получаем лимиты для корректных данных при постановке ордера
         $url = $this->apiUrlBeginning.'/v5/market/instruments-info';
-        $limits = $this->getLimits($url, $symbol);
+        $cacheKey = CacheKeysEnum::PairLimitsForSymbolInExchange
+            ->getKeyForSymbolLimits(static::EXCHANGE_NAME, $symbol);
+        $limits = Cache::get($cacheKey);
+        // Если лимиты еще не получали или получали давно, то надо обновить и запомнить
+        if ($limits === null) {
+            $limitsResponse = $this->sendRequestForGetLimits(
+                $url,
+                [
+                    'category' => self::MARKET_LINEAR_CATEGORY,
+                    'symbol' => $symbol,
+                ],
+            );
+            $limits = $this->getLimitsFromResponse($limitsResponse, $cacheKey);
+        }
         // Шаг изменения количества, чтобы отправить в ордере правильное количество
         $qtyStep = (float) $limits['qtyStep'];
         // Минимальное количество для ордера
@@ -57,12 +190,26 @@ class BybitApiJob extends AbstractExchangeApi
 
         // Получаем баланс аккаунта (available balance) заранее
         $url = $this->apiUrlBeginning.'/v5/account/wallet-balance';
-        // USDT на торговом кошельке
-        $accountBalance = $this->getCurrentBalance($url);
+        $cacheKey = CacheKeysEnum::CurrentBalanceForExchange->getKeyForBalance(self::EXCHANGE_NAME);
+        $accountBalance = Cache::get($cacheKey);
+        // Если баланс еще не получали или получали давно, то надо обновить и запомнить
+        if ($accountBalance === null) {
+            // USDT на торговом кошельке
+            $query = [
+                'accountType' => 'UNIFIED',
+                'coin' => self::SECOND_WORD_FOR_PAIR,
+            ];
+            $balanceResponse = $this->getCurrentBalance(
+                $url,
+                $query,
+                $this->createSignatureForHeaders($query, true),
+            );
+            $accountBalance = $this->getBalanceFromResponse($balanceResponse, $cacheKey);
+        }
         if ($accountBalance < self::MIN_MONEY_IN_ORDER) {
             Log::channel('exchangeApiErrors')
                 ->error(
-                    'На балансе всего $' . $accountBalance,
+                    'На балансе всего $'.$accountBalance,
                     [
                         'channel_id' => $this->orderData['channelId'],
                         'orderData' => $this->orderData,
@@ -120,7 +267,7 @@ class BybitApiJob extends AbstractExchangeApi
         $url = $this->apiUrlBeginning.'/v5/order/create';
         $body = [
             'category' => self::MARKET_LINEAR_CATEGORY,
-            'symbol' =>	$symbol,
+            'symbol' => $symbol,
             'side' => $this->orderData['direction'],
             'orderType' => self::MARKET_ORDER_TYPE,
             'qty' => (string) $qty,
@@ -263,7 +410,7 @@ class BybitApiJob extends AbstractExchangeApi
             $takeProfitDataToSave[] = $stopLossDataToSave;
             $orderTargetRepository->insert($takeProfitDataToSave);
         } catch (Throwable $e) {
-            Log::error('Ошибка записи информации об ордере. Описание: ' . $e->getMessage(), [
+            Log::error('Ошибка записи информации об ордере. Описание: '.$e->getMessage(), [
                 'orderDataToSave' => $orderDataToSave,
                 'takeProfitDataToSave' => $takeProfitDataToSave,
             ]);

@@ -147,6 +147,13 @@ return [
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
         ],
+
+        'websocketUnhandledMessages' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/websocketUnhandledMessages.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'replace_placeholders' => true,
+        ],
     ],
 
 ];

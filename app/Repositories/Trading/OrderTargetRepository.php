@@ -20,4 +20,14 @@ class OrderTargetRepository extends AbstractRepository
     {
         OrderTarget::query()->insert($data);
     }
+
+    public function getByExchangeTpId(int $id, array $relations = []): ?OrderTarget
+    {
+        $query = OrderTarget::query()->where('exchange_tp_id', $id);
+        if ($relations !== []) {
+            $query->with($relations);
+        }
+
+        return $query->first();
+    }
 }

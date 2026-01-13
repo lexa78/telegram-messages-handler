@@ -5,20 +5,21 @@ declare(strict_types=1);
 namespace App\Models\Trading;
 
 use App\Models\AbstractModel;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
 
 /**
  * Таблица с информацией о каждом TP/SL которые принесли прибыль/убыток по проставленному ордеру
  *
  * @property int $id - идентификатор записи
- * @property int $order_id - Для какого ордера получили прибыль/убыток todo сделать связь
+ * @property int $order_id - Для какого ордера получили прибыль/убыток
  * @property float $pnl - Сумма прибыли/убытка
  * @property float $pnl_percent - Процент прибыли/убытка
  * @property int $reason - Что закрыло сделку (TP/SL/Manual)
  * @property Carbon $created_at - время создания записи
  * @property Carbon $updated_at - время изменения записи
  *
- * @property-read - todo добавить описание связей
+ * @property-read Order $order - Ордер, для которого записан этот лог
  */
 class TradePnlLog extends AbstractModel
 {
@@ -32,4 +33,9 @@ class TradePnlLog extends AbstractModel
         'created_at',
         'updated_at',
     ];
+
+    public function order(): BelongsTo
+    {
+        return $this->belongsTo(Order::class, 'order_id');
+    }
 }

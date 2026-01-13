@@ -10,4 +10,5 @@ namespace App\Enums\Trading;
 enum ExchangesEnum: int
 {
     case Bybit = 1;
+    case Gate = 2;
 }
